@@ -23,7 +23,7 @@ from palintir.db import init_db
 from palintir.logging import setup_logging
 from palintir.redis_client import Channels, Subscriber, create_redis
 
-from .routers import dashboard, settings
+from .routers import attendance, dashboard, enrollment, settings
 from .websocket import WebSocketManager
 
 logger = structlog.get_logger()
@@ -94,6 +94,8 @@ def create_app() -> FastAPI:
     # API routes
     app.include_router(dashboard.router)
     app.include_router(settings.router)
+    app.include_router(enrollment.router)
+    app.include_router(attendance.router)
 
     # Health check (no auth required)
     @app.get("/api/health")

@@ -1,6 +1,7 @@
-"""Audio service: mic capture, wake word detection, STT, and speaker ID.
+"""Audio service: mic capture, wake word detection, VAD, STT, and speaker ID.
 
 This is the main entry point for the palintir-audio systemd service.
+Pipeline: mic -> wake word -> VAD -> STT -> publish utterance to Redis
 """
 
 from __future__ import annotations
@@ -8,22 +9,34 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
+from datetime import datetime
 
 import numpy as np
 import structlog
 
 from palintir.config import load_config
 from palintir.logging import setup_logging
-from palintir.models import PrivacyModeEvent, ServiceStatus, WakeWordEvent
+from palintir.models import PrivacyModeEvent, ServiceStatus, Utterance, WakeWordEvent
 from palintir.redis_client import Channels, Keys, Subscriber, create_redis, publish
 
 from .capture import AudioCapture
+from .stt import SpeechToText
+from .wake_word import WakeWordDetector
 
 logger = structlog.get_logger()
 
+# Import VAD conditionally (requires torch)
+try:
+    from .vad import VoiceActivityDetector
+
+    _VAD_AVAILABLE = True
+except ImportError:
+    _VAD_AVAILABLE = False
+    logger.warning("vad_not_available", hint="pip install torch")
+
 
 class AudioService:
-    """Orchestrates the audio pipeline: capture -> wake word -> VAD -> STT -> speaker ID."""
+    """Orchestrates the audio pipeline: capture -> wake word -> VAD -> STT."""
 
     def __init__(self):
         self._config = load_config()
@@ -34,25 +47,48 @@ class AudioService:
         self._running = False
         self._start_time = time.monotonic()
 
-        # Audio buffer for wake word detection
-        self._audio_buffer: list[np.ndarray] = []
+        # Pipeline components
+        self._wake_word: WakeWordDetector | None = None
+        self._vad: VoiceActivityDetector | None = None
+        self._stt: SpeechToText | None = None
 
-        # State: are we recording an utterance after wake word?
-        self._recording = False
-        self._utterance_chunks: list[np.ndarray] = []
+        # State
+        self._listening_for_utterance = False
+        self._utterance_task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self) -> None:
         """Initialize and start all audio pipeline components."""
+        self._loop = asyncio.get_event_loop()
         self._redis = await create_redis(self._config)
 
-        # Check if privacy mode is active
+        # Check privacy mode
         privacy = await self._redis.get(Keys.PRIVACY_MODE)
         self._privacy_mode = privacy == "1"
 
-        # Set up Redis subscriber for privacy mode toggle
+        # Redis subscriber
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.SYSTEM_PRIVACY, self._on_privacy_toggle)
         await self._subscriber.start()
+
+        # Initialize pipeline components
+        audio_cfg = self._config.audio
+
+        self._wake_word = WakeWordDetector(threshold=audio_cfg.wake_word_threshold)
+        self._wake_word.on_wake(self._on_wake_word)
+
+        if _VAD_AVAILABLE:
+            self._vad = VoiceActivityDetector(
+                sample_rate=audio_cfg.sample_rate,
+                silence_timeout_ms=audio_cfg.silence_timeout_ms,
+                max_duration_seconds=audio_cfg.max_utterance_seconds,
+            )
+
+        self._stt = SpeechToText(
+            model_size=audio_cfg.stt_model,
+            compute_type=audio_cfg.stt_compute_type,
+            beam_size=audio_cfg.stt_beam_size,
+        )
 
         # Start audio capture
         self._capture = AudioCapture(self._config.audio)
@@ -62,31 +98,86 @@ class AudioService:
             self._capture.start()
 
         self._running = True
-        logger.info("audio_service_started", privacy_mode=self._privacy_mode)
-
-        # Publish service status
+        logger.info(
+            "audio_service_started",
+            privacy_mode=self._privacy_mode,
+            wake_word=self._wake_word.is_active,
+            vad=_VAD_AVAILABLE,
+            stt=self._stt.is_available if self._stt else False,
+        )
         await self._publish_status(healthy=True)
 
     def _on_audio_chunk(self, chunk: np.ndarray) -> None:
-        """Handle a raw audio chunk from the microphone.
-
-        In Phase 1, this just accumulates data. Wake word detection,
-        VAD, STT, and speaker ID will be added in Phase 2.
-        """
+        """Handle a raw audio chunk from the microphone."""
         if self._privacy_mode:
             return
 
-        # Buffer audio for wake word processing (will be implemented in Phase 2)
-        self._audio_buffer.append(chunk)
+        if self._listening_for_utterance and self._vad:
+            # Feed audio to VAD to capture the utterance
+            utterance = self._vad.process_audio(chunk)
+            if utterance is not None:
+                # Utterance complete - process it asynchronously
+                self._listening_for_utterance = False
+                if self._loop:
+                    asyncio.run_coroutine_threadsafe(
+                        self._process_utterance(utterance), self._loop
+                    )
+        else:
+            # Feed audio to wake word detector
+            if self._wake_word:
+                self._wake_word.process_audio(chunk)
 
-        # Keep buffer to last 5 seconds of audio
-        max_chunks = int(
-            5.0 * self._config.audio.sample_rate / (
-                self._config.audio.sample_rate * self._config.audio.chunk_duration_ms / 1000
+    def _on_wake_word(self, confidence: float) -> None:
+        """Called when the wake word is detected."""
+        if self._listening_for_utterance:
+            return  # Already listening
+
+        logger.info("wake_word_triggered", confidence=round(confidence, 3))
+        self._listening_for_utterance = True
+
+        # Start VAD recording
+        if self._vad:
+            self._vad.start_recording()
+
+        # Publish wake event
+        if self._loop and self._redis:
+            event = WakeWordEvent(confidence=confidence)
+            asyncio.run_coroutine_threadsafe(
+                publish(self._redis, Channels.AUDIO_WAKE, event), self._loop
             )
+
+    async def _process_utterance(self, audio: np.ndarray) -> None:
+        """Transcribe an utterance and publish the result."""
+        if not self._stt:
+            logger.warning("stt_not_available")
+            return
+
+        # Run STT in executor to avoid blocking the event loop
+        text = await asyncio.get_event_loop().run_in_executor(
+            None, self._stt.transcribe, audio, self._config.audio.sample_rate
         )
-        if len(self._audio_buffer) > max_chunks:
-            self._audio_buffer = self._audio_buffer[-max_chunks:]
+
+        if not text:
+            logger.debug("utterance_empty_transcription")
+            # Reset wake word detector for next trigger
+            if self._wake_word:
+                self._wake_word.reset()
+            return
+
+        duration = len(audio) / self._config.audio.sample_rate
+
+        # Build and publish the utterance
+        utterance = Utterance(
+            text=text,
+            duration_seconds=round(duration, 2),
+        )
+
+        logger.info("utterance_published", text=text[:100], duration=round(duration, 2))
+        await publish(self._redis, Channels.AUDIO_UTTERANCE, utterance)
+
+        # Reset wake word for next trigger
+        if self._wake_word:
+            self._wake_word.reset()
 
     async def _on_privacy_toggle(self, data: dict) -> None:
         """Handle privacy mode toggle."""
@@ -96,9 +187,9 @@ class AudioService:
         if event.enabled:
             if self._capture and self._capture.is_running:
                 self._capture.stop()
-            self._audio_buffer.clear()
-            self._recording = False
-            self._utterance_chunks.clear()
+            self._listening_for_utterance = False
+            if self._vad:
+                self._vad.cancel()
             logger.info("audio_privacy_mode_enabled")
         else:
             if self._capture and not self._capture.is_running:
@@ -106,7 +197,6 @@ class AudioService:
             logger.info("audio_privacy_mode_disabled")
 
     async def _publish_status(self, healthy: bool) -> None:
-        """Publish service health status."""
         status = ServiceStatus(
             name="audio",
             healthy=healthy,
@@ -114,21 +204,18 @@ class AudioService:
             details={
                 "privacy_mode": self._privacy_mode,
                 "capturing": self._capture.is_running if self._capture else False,
-                "recording_utterance": self._recording,
+                "listening": self._listening_for_utterance,
+                "wake_word_active": self._wake_word.is_active if self._wake_word else False,
+                "stt_available": self._stt.is_available if self._stt else False,
             },
         )
         await publish(self._redis, Channels.SYSTEM_STATUS, status)
 
     async def run(self) -> None:
-        """Main service loop."""
         await self.start()
-
         try:
-            # Run the audio dispatch loop
             if self._capture:
                 dispatch_task = asyncio.create_task(self._capture.run_dispatch_loop())
-
-                # Periodic status publishing
                 while self._running:
                     await self._publish_status(healthy=True)
                     await asyncio.sleep(10)
@@ -138,7 +225,6 @@ class AudioService:
             await self.stop()
 
     async def stop(self) -> None:
-        """Shut down the audio service."""
         self._running = False
         if self._capture:
             self._capture.stop()
@@ -150,10 +236,8 @@ class AudioService:
 
 
 def main() -> None:
-    """Entry point for the palintir-audio service."""
     setup_logging("audio")
     service = AudioService()
-
     loop = asyncio.new_event_loop()
 
     def shutdown(sig: signal.Signals) -> None:

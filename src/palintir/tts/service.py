@@ -1,6 +1,7 @@
-"""TTS service: text-to-speech queue and speaker output.
+"""TTS service: text-to-speech synthesis and speaker output.
 
 This is the main entry point for the palintir-tts systemd service.
+Subscribes to brain responses and speaks them aloud.
 """
 
 from __future__ import annotations
@@ -16,11 +17,14 @@ from palintir.logging import setup_logging
 from palintir.models import AssistantResponse, PrivacyModeEvent, ServiceStatus
 from palintir.redis_client import Channels, Keys, Subscriber, create_redis, publish
 
+from .audio_output import AudioOutput
+from .piper_engine import PiperEngine
+
 logger = structlog.get_logger()
 
 
 class TTSService:
-    """Manages the TTS queue and audio output."""
+    """Synthesizes and plays speech from brain responses."""
 
     def __init__(self):
         self._config = load_config()
@@ -30,20 +34,34 @@ class TTSService:
         self._running = False
         self._start_time = time.monotonic()
         self._speech_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+        # TTS components
+        self._engine: PiperEngine | None = None
+        self._output: AudioOutput | None = None
 
     async def start(self) -> None:
+        self._loop = asyncio.get_event_loop()
         self._redis = await create_redis(self._config)
 
         privacy = await self._redis.get(Keys.PRIVACY_MODE)
         self._privacy_mode = privacy == "1"
 
+        # Initialize TTS engine and audio output
+        self._engine = PiperEngine(self._config.tts)
+        self._output = AudioOutput()
+
+        # Subscribe to events
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.BRAIN_RESPONSE, self._on_response)
         self._subscriber.on(Channels.SYSTEM_PRIVACY, self._on_privacy_toggle)
         await self._subscriber.start()
 
         self._running = True
-        logger.info("tts_service_started")
+        logger.info(
+            "tts_service_started",
+            engine_available=self._engine.is_available,
+        )
         await self._publish_status(healthy=True)
 
     async def _on_response(self, data: dict) -> None:
@@ -52,23 +70,40 @@ class TTSService:
             return
         response = AssistantResponse(**data)
         await self._speech_queue.put(response.text)
-        logger.info("tts_queued", text_length=len(response.text))
+        logger.debug("tts_queued", text_length=len(response.text))
 
     async def _synthesize_and_play(self, text: str) -> None:
-        """Synthesize speech from text and play it.
+        """Synthesize speech and play it through the speaker."""
+        if not self._engine or not self._output:
+            return
 
-        Phase 2 will implement Piper TTS here. For now, just log.
-        """
-        logger.info("tts_speaking", text=text[:100])
-        # Placeholder: will use Piper TTS engine in Phase 2
+        # Run synthesis in executor (CPU-bound)
+        result = await self._loop.run_in_executor(
+            None, self._engine.synthesize, text
+        )
+
+        if result is None:
+            logger.warning("tts_synthesis_failed", text=text[:50])
+            return
+
+        audio, sample_rate = result
+
+        # Play audio (blocks in executor until done)
+        await self._loop.run_in_executor(
+            None, self._output.play, audio, sample_rate
+        )
+
+        logger.info("tts_spoken", text=text[:80], duration=round(len(audio) / sample_rate, 2))
 
     async def _on_privacy_toggle(self, data: dict) -> None:
         event = PrivacyModeEvent(**data)
         self._privacy_mode = event.enabled
         if event.enabled:
-            # Clear the speech queue
+            # Clear pending speech and stop current playback
             while not self._speech_queue.empty():
                 self._speech_queue.get_nowait()
+            if self._output:
+                self._output.stop()
         logger.info("tts_privacy_mode", enabled=event.enabled)
 
     async def _publish_status(self, healthy: bool) -> None:
@@ -79,6 +114,8 @@ class TTSService:
             details={
                 "privacy_mode": self._privacy_mode,
                 "queue_size": self._speech_queue.qsize(),
+                "engine_available": self._engine.is_available if self._engine else False,
+                "playing": self._output.is_playing if self._output else False,
             },
         )
         await publish(self._redis, Channels.SYSTEM_STATUS, status)
@@ -99,6 +136,8 @@ class TTSService:
 
     async def stop(self) -> None:
         self._running = False
+        if self._output:
+            self._output.stop()
         if self._subscriber:
             await self._subscriber.stop()
         if self._redis:

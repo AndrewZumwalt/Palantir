@@ -1,6 +1,8 @@
 import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import DashboardPage from "./components/Dashboard/DashboardPage";
+import AttendancePanel from "./components/Dashboard/AttendancePanel";
+import EnrollmentWizard from "./components/Enrollment/EnrollmentWizard";
 
 function PlaceholderPage({ title }: { title: string }) {
   return (
@@ -16,14 +18,8 @@ export default function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<DashboardPage />} />
-        <Route
-          path="attendance"
-          element={<PlaceholderPage title="Attendance" />}
-        />
-        <Route
-          path="enrollment"
-          element={<PlaceholderPage title="Enrollment" />}
-        />
+        <Route path="attendance" element={<AttendancePanel />} />
+        <Route path="enrollment" element={<EnrollmentWizard />} />
         <Route
           path="events"
           element={<PlaceholderPage title="Event Log" />}

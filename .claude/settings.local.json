@@ -20,7 +20,17 @@
       "Bash(python3 -m py_compile src/palintir/web/dependencies.py)",
       "Bash(python3 -m py_compile src/palintir/web/websocket.py)",
       "Bash(python3 -m py_compile src/palintir/web/routers/dashboard.py)",
-      "Bash(python3 -m py_compile src/palintir/web/routers/settings.py)"
+      "Bash(python3 -m py_compile src/palintir/web/routers/settings.py)",
+      "Bash(python3 -m py_compile src/palintir/audio/wake_word.py)",
+      "Bash(python3 -m py_compile src/palintir/audio/stt.py)",
+      "Bash(python3 -m py_compile src/palintir/brain/llm_client.py)",
+      "Bash(python3 -m py_compile src/palintir/brain/context_builder.py)",
+      "Bash(python3 -m py_compile src/palintir/brain/conversation.py)",
+      "Bash(python3 -m py_compile src/palintir/vision/face_detector.py)",
+      "Bash(python3 -m py_compile src/palintir/vision/face_recognizer.py)",
+      "Bash(python3 -m py_compile src/palintir/eventlog/attendance.py)",
+      "Bash(python3 -m py_compile src/palintir/web/routers/enrollment.py)",
+      "Bash(python3 -m py_compile src/palintir/web/routers/attendance.py)"
     ]
   }
 }
