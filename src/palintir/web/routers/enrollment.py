@@ -188,6 +188,97 @@ async def capture_face(
     )
 
 
+class VoiceSampleRequest(BaseModel):
+    """Base64-encoded WAV audio from the browser microphone."""
+    audio_base64: str
+    sample_rate: int = 16000
+
+
+class VoiceEnrollmentStatus(BaseModel):
+    person_id: str
+    voice_samples: int
+    required_samples: int
+    complete: bool
+
+
+# Lazy speaker identifier
+_speaker_identifier = None
+
+
+def _get_speaker_identifier(db: sqlite3.Connection, config: PalintirConfig):
+    global _speaker_identifier
+    if _speaker_identifier is None:
+        try:
+            from palintir.audio.speaker_id import SpeakerIdentifier
+            _speaker_identifier = SpeakerIdentifier(
+                db, match_threshold=config.identity.voice_match_threshold
+            )
+        except ImportError:
+            pass
+    return _speaker_identifier
+
+
+@router.post("/persons/{person_id}/voice")
+async def capture_voice(
+    person_id: str,
+    req: VoiceSampleRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    config: PalintirConfig = Depends(get_config),
+):
+    """Submit a voice sample for enrollment.
+
+    Accepts base64-encoded audio, extracts a speaker embedding,
+    and stores it. After enough samples, computes the mean embedding.
+    """
+    row = db.execute("SELECT id, name FROM persons WHERE id = ?", (person_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    identifier = _get_speaker_identifier(db, config)
+    if not identifier or not identifier.is_available:
+        raise HTTPException(status_code=503, detail="Speaker ID model not available")
+
+    # Decode base64 audio
+    try:
+        audio_bytes = base64.b64decode(req.audio_base64)
+        audio = np.frombuffer(audio_bytes, dtype=np.int16)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid audio data")
+
+    if len(audio) < req.sample_rate:  # Less than 1 second
+        raise HTTPException(status_code=422, detail="Audio too short. Please speak for at least 2 seconds.")
+
+    # Extract voice embedding
+    embedding = identifier.extract_embedding(audio, req.sample_rate)
+    if embedding is None:
+        raise HTTPException(status_code=422, detail="Could not extract voice embedding")
+
+    # Save embedding
+    enrollment_dir = Path(config.enrollment_path) / person_id
+    enrollment_dir.mkdir(parents=True, exist_ok=True)
+    existing = list(enrollment_dir.glob("voice_emb_*.npy"))
+    idx = len(existing)
+    np.save(str(enrollment_dir / f"voice_emb_{idx:03d}.npy"), embedding)
+
+    total_samples = idx + 1
+    required = config.identity.enrollment_voice_samples
+    complete = total_samples >= required
+
+    # If enough samples, compute mean and store
+    if complete:
+        embeddings = []
+        for emb_file in sorted(enrollment_dir.glob("voice_emb_*.npy")):
+            embeddings.append(np.load(str(emb_file)))
+        identifier.enroll_voice(person_id, embeddings)
+
+    return VoiceEnrollmentStatus(
+        person_id=person_id,
+        voice_samples=total_samples,
+        required_samples=required,
+        complete=complete,
+    )
+
+
 @router.get("/persons/{person_id}/status")
 async def enrollment_status(
     person_id: str,
@@ -196,25 +287,30 @@ async def enrollment_status(
 ):
     """Get enrollment status for a person."""
     row = db.execute(
-        "SELECT id, name, role, face_embedding IS NOT NULL as has_face "
+        "SELECT id, name, role, "
+        "face_embedding IS NOT NULL as has_face, "
+        "voice_embedding IS NOT NULL as has_voice "
         "FROM persons WHERE id = ?",
         (person_id,),
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Person not found")
 
-    # Count existing face samples
     enrollment_dir = Path(config.enrollment_path) / person_id
     face_samples = len(list(enrollment_dir.glob("face_*.jpg"))) if enrollment_dir.exists() else 0
+    voice_samples = len(list(enrollment_dir.glob("voice_emb_*.npy"))) if enrollment_dir.exists() else 0
 
-    return EnrollmentStatus(
-        person_id=person_id,
-        name=row["name"],
-        role=row["role"],
-        face_samples=face_samples,
-        required_samples=config.identity.enrollment_face_samples,
-        complete=bool(row["has_face"]),
-    )
+    return {
+        "person_id": person_id,
+        "name": row["name"],
+        "role": row["role"],
+        "face_samples": face_samples,
+        "face_required": config.identity.enrollment_face_samples,
+        "face_complete": bool(row["has_face"]),
+        "voice_samples": voice_samples,
+        "voice_required": config.identity.enrollment_voice_samples,
+        "voice_complete": bool(row["has_voice"]),
+    }
 
 
 @router.delete("/persons/{person_id}")

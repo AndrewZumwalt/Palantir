@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api/client";
+import VoiceCapture from "./VoiceCapture";
 
 interface Person {
   id: string;
@@ -18,7 +19,7 @@ interface EnrollmentStatus {
   complete: boolean;
 }
 
-type Step = "list" | "create" | "consent" | "capture" | "done";
+type Step = "list" | "create" | "consent" | "capture" | "voice" | "done";
 
 export default function EnrollmentWizard() {
   const [persons, setPersons] = useState<Person[]>([]);
@@ -109,7 +110,7 @@ export default function EnrollmentWizard() {
 
       if (result.complete) {
         stopCamera();
-        setStep("done");
+        setStep("voice");
       }
     } catch (err: unknown) {
       const message =
@@ -351,6 +352,18 @@ export default function EnrollmentWizard() {
     );
   }
 
+  // Voice capture
+  if (step === "voice" && currentPerson) {
+    return (
+      <VoiceCapture
+        personId={currentPerson.id}
+        personName={currentPerson.name}
+        onComplete={() => setStep("done")}
+        onSkip={() => setStep("done")}
+      />
+    );
+  }
+
   // Done
   return (
     <div className="max-w-md mx-auto text-center py-12">
@@ -371,8 +384,8 @@ export default function EnrollmentWizard() {
       </div>
       <h2 className="text-xl font-bold mb-2">Enrollment Complete</h2>
       <p className="text-gray-500 mb-6">
-        {currentPerson?.name} has been successfully enrolled with facial
-        recognition.
+        {currentPerson?.name} has been successfully enrolled with face and
+        voice recognition.
       </p>
       <button
         onClick={resetWizard}

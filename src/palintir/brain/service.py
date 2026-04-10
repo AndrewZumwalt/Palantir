@@ -29,6 +29,7 @@ from palintir.redis_client import Channels, Keys, Subscriber, create_redis, publ
 
 from .context_builder import ContextBuilder
 from .conversation import ConversationManager
+from .identity_linker import IdentityLinker
 from .llm_client import LLMClient
 
 logger = structlog.get_logger()
@@ -50,6 +51,7 @@ class BrainService:
         self._llm: LLMClient | None = None
         self._context_builder: ContextBuilder | None = None
         self._conversation: ConversationManager | None = None
+        self._identity_linker: IdentityLinker | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self) -> None:
@@ -67,6 +69,10 @@ class BrainService:
         )
         self._context_builder = ContextBuilder(self._redis, self._db)
         self._conversation = ConversationManager(self._db)
+        self._identity_linker = IdentityLinker(
+            self._redis,
+            staleness_timeout=self._config.identity.identity_staleness_seconds,
+        )
 
         # Subscribe to events
         self._subscriber = Subscriber(self._redis)
@@ -93,10 +99,36 @@ class BrainService:
 
         logger.info("brain_processing", text=utterance.text[:100])
 
-        # In Phase 4, speaker_id will be resolved here.
-        # For now, speaker is unknown.
+        # Resolve speaker identity via the identity linker
         speaker_name = None
         speaker_id = None
+        linked = None
+
+        # Check if audio service identified the speaker
+        last_speaker = await self._redis.get("state:last_speaker")
+        if last_speaker:
+            parts = last_speaker.split(":", 2)
+            if len(parts) == 3:
+                raw_id, raw_name, raw_conf = parts
+                # Link voice identity to visual location
+                linked = await self._identity_linker.link(
+                    speaker_person_id=raw_id,
+                    speaker_name=raw_name,
+                    speaker_confidence=float(raw_conf),
+                )
+                speaker_id = linked.person_id
+                speaker_name = linked.name
+                logger.info(
+                    "identity_resolved",
+                    name=speaker_name,
+                    fully_linked=linked.fully_linked,
+                    location_source=linked.location_source,
+                )
+        else:
+            # No voice match - try inference from visible faces
+            linked = await self._identity_linker.link(None, None, 0.0)
+            speaker_id = linked.person_id
+            speaker_name = linked.name
 
         # Build context from room state
         context = await self._context_builder.build(

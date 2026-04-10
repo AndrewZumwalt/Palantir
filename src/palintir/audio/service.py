@@ -15,8 +15,15 @@ import numpy as np
 import structlog
 
 from palintir.config import load_config
+from palintir.db import init_db
 from palintir.logging import setup_logging
-from palintir.models import PrivacyModeEvent, ServiceStatus, Utterance, WakeWordEvent
+from palintir.models import (
+    PrivacyModeEvent,
+    ServiceStatus,
+    SpeakerIdentification,
+    Utterance,
+    WakeWordEvent,
+)
 from palintir.redis_client import Channels, Keys, Subscriber, create_redis, publish
 
 from .capture import AudioCapture
@@ -32,7 +39,14 @@ try:
     _VAD_AVAILABLE = True
 except ImportError:
     _VAD_AVAILABLE = False
-    logger.warning("vad_not_available", hint="pip install torch")
+
+# Import speaker ID conditionally
+try:
+    from .speaker_id import SpeakerIdentifier
+
+    _SPEAKER_ID_AVAILABLE = True
+except ImportError:
+    _SPEAKER_ID_AVAILABLE = False
 
 
 class AudioService:
@@ -51,6 +65,8 @@ class AudioService:
         self._wake_word: WakeWordDetector | None = None
         self._vad: VoiceActivityDetector | None = None
         self._stt: SpeechToText | None = None
+        self._speaker_id: SpeakerIdentifier | None = None
+        self._db = None
 
         # State
         self._listening_for_utterance = False
@@ -89,6 +105,14 @@ class AudioService:
             compute_type=audio_cfg.stt_compute_type,
             beam_size=audio_cfg.stt_beam_size,
         )
+
+        # Initialize speaker identification
+        if _SPEAKER_ID_AVAILABLE:
+            self._db = init_db(self._config)
+            self._speaker_id = SpeakerIdentifier(
+                self._db,
+                match_threshold=self._config.identity.voice_match_threshold,
+            )
 
         # Start audio capture
         self._capture = AudioCapture(self._config.audio)
@@ -159,23 +183,67 @@ class AudioService:
 
         if not text:
             logger.debug("utterance_empty_transcription")
-            # Reset wake word detector for next trigger
             if self._wake_word:
                 self._wake_word.reset()
             return
 
         duration = len(audio) / self._config.audio.sample_rate
 
-        # Build and publish the utterance
+        # Extract speaker embedding (in parallel concept, but sequentially for CPU)
+        speaker_embedding = None
+        if self._speaker_id and self._speaker_id.is_available:
+            speaker_embedding = await asyncio.get_event_loop().run_in_executor(
+                None, self._speaker_id.extract_embedding, audio, self._config.audio.sample_rate
+            )
+
+        # Identify speaker
+        speaker_person_id = None
+        speaker_name = None
+        speaker_confidence = 0.0
+
+        if speaker_embedding is not None and self._speaker_id:
+            match = self._speaker_id.identify(speaker_embedding)
+            if match.matched:
+                speaker_person_id = match.person_id
+                speaker_name = match.name
+                speaker_confidence = match.confidence
+                logger.info(
+                    "speaker_identified",
+                    name=match.name,
+                    confidence=match.confidence,
+                )
+
+                # Publish speaker identification
+                speaker_msg = SpeakerIdentification(
+                    person_id=match.person_id,
+                    name=match.name,
+                    confidence=match.confidence,
+                )
+                await publish(self._redis, Channels.AUDIO_SPEAKER_ID, speaker_msg)
+
+        # Build and publish the utterance with speaker info
         utterance = Utterance(
             text=text,
+            speaker_embedding=speaker_embedding.tolist() if speaker_embedding is not None else None,
             duration_seconds=round(duration, 2),
         )
 
-        logger.info("utterance_published", text=text[:100], duration=round(duration, 2))
+        logger.info(
+            "utterance_published",
+            text=text[:100],
+            speaker=speaker_name or "unknown",
+            duration=round(duration, 2),
+        )
         await publish(self._redis, Channels.AUDIO_UTTERANCE, utterance)
 
-        # Reset wake word for next trigger
+        # Also publish speaker ID separately so brain can correlate
+        if speaker_person_id:
+            await self._redis.set(
+                "state:last_speaker",
+                f"{speaker_person_id}:{speaker_name}:{speaker_confidence}",
+                ex=30,  # Expires after 30 seconds
+            )
+
         if self._wake_word:
             self._wake_word.reset()
 
