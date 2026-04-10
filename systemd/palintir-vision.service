@@ -1,0 +1,28 @@
+[Unit]
+Description=Palintir Vision Service
+After=redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=palintir
+Group=palintir
+WorkingDirectory=/opt/palintir
+Environment=PALINTIR_ENV=production
+EnvironmentFile=/opt/palintir/.env
+ExecStart=/opt/palintir/.venv/bin/palintir-vision
+Restart=always
+RestartSec=5
+Nice=-5
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/palintir
+
+# Camera device access
+SupplementaryGroups=video
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+[Unit]
+Description=Palintir TTS Service
+After=redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=palintir
+Group=palintir
+WorkingDirectory=/opt/palintir
+Environment=PALINTIR_ENV=production
+EnvironmentFile=/opt/palintir/.env
+ExecStart=/opt/palintir/.venv/bin/palintir-tts
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/palintir
+
+SupplementaryGroups=audio
+
+[Install]
+WantedBy=multi-user.target

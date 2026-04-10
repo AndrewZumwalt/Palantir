@@ -1,0 +1,25 @@
+[Unit]
+Description=Palintir Web Service
+After=redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=palintir
+Group=palintir
+WorkingDirectory=/opt/palintir
+Environment=PALINTIR_ENV=production
+EnvironmentFile=/opt/palintir/.env
+ExecStart=/opt/palintir/.venv/bin/palintir-web
+Restart=always
+RestartSec=5
+Nice=10
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/palintir
+
+[Install]
+WantedBy=multi-user.target

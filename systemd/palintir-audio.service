@@ -1,0 +1,29 @@
+[Unit]
+Description=Palintir Audio Service
+After=redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=palintir
+Group=palintir
+WorkingDirectory=/opt/palintir
+Environment=PALINTIR_ENV=production
+EnvironmentFile=/opt/palintir/.env
+ExecStart=/opt/palintir/.venv/bin/palintir-audio
+Restart=always
+RestartSec=5
+Nice=-5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/palintir
+
+# Audio device access
+SupplementaryGroups=audio
+
+[Install]
+WantedBy=multi-user.target

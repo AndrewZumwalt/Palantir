@@ -1,0 +1,15 @@
+# Development overrides (non-Pi machines)
+
+[camera]
+device = 0
+fps = 10  # lower for dev machines
+
+[audio]
+device = "default"
+
+[redis]
+url = "redis://localhost:6379/0"
+
+[web]
+host = "127.0.0.1"
+port = 8080
