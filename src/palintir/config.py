@@ -121,6 +121,12 @@ class AttendanceConfig:
 
 
 @dataclass
+class AutomationConfig:
+    enabled: bool = True
+    allow_shell_commands: bool = False  # Dangerous; off by default
+
+
+@dataclass
 class PalintirConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
@@ -132,6 +138,7 @@ class PalintirConfig:
     redis: RedisConfig = field(default_factory=RedisConfig)
     engagement: EngagementConfig = field(default_factory=EngagementConfig)
     attendance: AttendanceConfig = field(default_factory=AttendanceConfig)
+    automation: AutomationConfig = field(default_factory=AutomationConfig)
 
     # Non-TOML config loaded from environment
     anthropic_api_key: str = ""
@@ -189,6 +196,7 @@ def load_config(environment: str | None = None) -> PalintirConfig:
         "redis": config.redis,
         "engagement": config.engagement,
         "attendance": config.attendance,
+        "automation": config.automation,
     }
 
     for section_name, section_dc in section_map.items():

@@ -60,3 +60,7 @@ cloud_validation_interval_seconds = 300  # 5 minutes
 
 [attendance]
 exit_timeout_seconds = 300  # 5 minutes absent = exited
+
+[automation]
+enabled = true
+allow_shell_commands = false  # DANGEROUS: enable only on trusted networks

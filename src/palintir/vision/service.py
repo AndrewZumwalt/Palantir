@@ -39,6 +39,20 @@ try:
 except ImportError:
     _FACE_AVAILABLE = False
 
+try:
+    from .object_detector import ObjectDetector
+
+    _OBJECT_AVAILABLE = True
+except ImportError:
+    _OBJECT_AVAILABLE = False
+
+try:
+    from .engagement import EngagementClassifier
+
+    _ENGAGEMENT_AVAILABLE = True
+except ImportError:
+    _ENGAGEMENT_AVAILABLE = False
+
 
 class VisionService:
     """Orchestrates the vision pipeline with tiered frame processing."""
@@ -57,6 +71,12 @@ class VisionService:
         # Face detection/recognition
         self._face_detector: FaceDetector | None = None
         self._face_recognizer: FaceRecognizer | None = None
+
+        # Object detection
+        self._object_detector: ObjectDetector | None = None
+
+        # Engagement classification
+        self._engagement_classifier: EngagementClassifier | None = None
 
         # Attendance tracking
         self._attendance_tracker = None
@@ -88,6 +108,25 @@ class VisionService:
             # Auto-start a session
             self._attendance_tracker.start_session()
 
+        # Initialize object detection
+        if _OBJECT_AVAILABLE:
+            self._object_detector = ObjectDetector(
+                frame_width=self._config.camera.width,
+                frame_height=self._config.camera.height,
+            )
+
+        # Initialize engagement classifier
+        if _ENGAGEMENT_AVAILABLE:
+            # Convert seconds to frame count: engagement runs every N frames at camera fps
+            eng_fps = self._config.camera.fps / self._config.camera.engagement_interval
+            window_frames = max(10, int(self._config.engagement.smoothing_window_seconds * eng_fps))
+            self._engagement_classifier = EngagementClassifier(
+                smoothing_window=window_frames,
+                phone_threshold=self._config.engagement.phone_confidence_threshold,
+                sleep_stillness_seconds=self._config.engagement.sleep_stillness_seconds,
+                frame_height=self._config.camera.height,
+            )
+
         # Subscribe to events
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.SYSTEM_PRIVACY, self._on_privacy_toggle)
@@ -104,6 +143,7 @@ class VisionService:
             privacy_mode=self._privacy_mode,
             face_detection=_FACE_AVAILABLE and self._face_detector is not None,
             enrolled_faces=self._face_recognizer.enrolled_count if self._face_recognizer else 0,
+            engagement=_ENGAGEMENT_AVAILABLE and self._engagement_classifier is not None,
         )
         await self._publish_status(healthy=True)
 
@@ -122,13 +162,17 @@ class VisionService:
         if frame_num % cam_cfg.face_detection_interval == 0:
             await self._detect_faces(frame)
 
-        # Tier 2: Engagement analysis (every 5th frame) - Phase 6
+        # Tier 2: Engagement analysis (every 5th frame)
         if frame_num % cam_cfg.engagement_interval == 0:
-            pass  # await self._analyze_engagement(frame)
+            await self._analyze_engagement(frame)
 
-        # Tier 3: Object detection (every 30th frame) - Phase 5
+        # Tier 3: Object detection (every 30th frame) + store frame for cloud vision
         if frame_num % cam_cfg.object_detection_interval == 0:
-            pass  # await self._detect_objects(frame)
+            # Store latest frame as JPEG in Redis for cloud vision queries
+            import cv2
+            _, jpeg_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            await self._redis.set(Keys.LATEST_FRAME, jpeg_buf.tobytes(), ex=30)
+            await self._detect_objects(frame)
 
         # Periodic exit check for attendance (every 30 seconds)
         now = time.monotonic()
@@ -197,6 +241,83 @@ class VisionService:
         faces_data = [f.model_dump() for f in detected_faces]
         await publish(self._redis, Channels.VISION_FACES, {"faces": faces_data})
 
+    async def _analyze_engagement(self, frame) -> None:
+        """Run pose-based engagement classification on the current frame."""
+        if not self._engagement_classifier or not self._engagement_classifier.is_available:
+            return
+
+        # Build known_persons map from Redis visible persons
+        known_persons = {}
+        if self._redis:
+            visible_raw = await self._redis.hgetall(Keys.VISIBLE_PERSONS)
+            for person_id, json_str in visible_raw.items():
+                try:
+                    vp = json.loads(json_str)
+                    from palintir.models import BoundingBox
+                    known_persons[person_id] = BoundingBox(**vp["bbox"])
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+        # Run classifier in executor (CPU-bound)
+        engagements = await self._loop.run_in_executor(
+            None,
+            lambda: self._engagement_classifier.classify_frame(frame, known_persons),
+        )
+
+        if not engagements:
+            return
+
+        # Enrich with names from visible persons
+        visible_raw = await self._redis.hgetall(Keys.VISIBLE_PERSONS) if self._redis else {}
+        for eng in engagements:
+            if eng.person_id in visible_raw:
+                try:
+                    vp = json.loads(visible_raw[eng.person_id])
+                    eng.name = vp.get("name")
+                except (json.JSONDecodeError, KeyError):
+                    pass
+
+        # Publish engagement data to Redis for dashboard + eventlog
+        engagement_data = [e.model_dump(mode="json") for e in engagements]
+        await publish(self._redis, Channels.VISION_ENGAGEMENT, {"engagements": engagement_data})
+
+        logger.debug(
+            "engagement_analyzed",
+            count=len(engagements),
+            states=[e.state.value for e in engagements],
+        )
+
+    async def _detect_objects(self, frame) -> None:
+        """Run YOLO object detection and cache results in Redis."""
+        if not self._object_detector or not self._object_detector.is_available:
+            return
+
+        # Run detection in executor (CPU-bound)
+        objects = await self._loop.run_in_executor(
+            None, self._object_detector.detect, frame
+        )
+
+        if not objects:
+            return
+
+        # Cache object list in Redis for the brain to query
+        objects_data = [obj.model_dump() for obj in objects]
+        import json
+        await self._redis.set(
+            Keys.OBJECT_CACHE,
+            json.dumps(objects_data, default=str),
+            ex=60,  # Expires after 60 seconds
+        )
+
+        # Publish for dashboard
+        await publish(self._redis, Channels.VISION_OBJECTS, {"objects": objects_data})
+
+        logger.debug(
+            "objects_detected",
+            count=len(objects),
+            labels=[o.label for o in objects[:10]],
+        )
+
     async def _check_attendance_exits(self) -> None:
         """Check if anyone has left the room."""
         if not self._attendance_tracker:
@@ -241,6 +362,7 @@ class VisionService:
                 "fps": self._camera.fps if self._camera else 0.0,
                 "frames_processed": self._last_frame_count,
                 "face_detection": _FACE_AVAILABLE,
+                "engagement_active": _ENGAGEMENT_AVAILABLE and self._engagement_classifier is not None,
                 "enrolled_faces": self._face_recognizer.enrolled_count if self._face_recognizer else 0,
                 "present_count": self._attendance_tracker.present_count if self._attendance_tracker else 0,
             },

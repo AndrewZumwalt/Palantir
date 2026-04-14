@@ -36,6 +36,7 @@ class Keys:
     ACTIVE_CONVERSATION = "state:active_conversation"
     PRIVACY_MODE = "state:privacy_mode"
     OBJECT_CACHE = "state:object_cache"
+    LATEST_FRAME = "state:latest_frame"
     SERVICE_STATUS = "state:service_status"
 
 

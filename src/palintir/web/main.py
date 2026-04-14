@@ -23,7 +23,16 @@ from palintir.db import init_db
 from palintir.logging import setup_logging
 from palintir.redis_client import Channels, Subscriber, create_redis
 
-from .routers import attendance, dashboard, enrollment, settings
+from .routers import (
+    attendance,
+    automation,
+    dashboard,
+    engagement,
+    enrollment,
+    events,
+    settings,
+    system,
+)
 from .websocket import WebSocketManager
 
 logger = structlog.get_logger()
@@ -59,6 +68,14 @@ async def lifespan(app: FastAPI):
             await app.state.ws_manager.broadcast(ch, data)
 
         subscriber.on(channel, _bridge)
+
+    # Cache latest ServiceStatus per service for the /api/system/status endpoint
+    async def _cache_status(data: dict) -> None:
+        name = data.get("name")
+        if name:
+            await redis.set(f"status:{name}", json.dumps(data), ex=60)
+
+    subscriber.on(Channels.SYSTEM_STATUS, _cache_status)
 
     await subscriber.start()
     app.state.subscriber = subscriber
@@ -96,6 +113,10 @@ def create_app() -> FastAPI:
     app.include_router(settings.router)
     app.include_router(enrollment.router)
     app.include_router(attendance.router)
+    app.include_router(engagement.router)
+    app.include_router(events.router)
+    app.include_router(automation.router)
+    app.include_router(system.router)
 
     # Health check (no auth required)
     @app.get("/api/health")

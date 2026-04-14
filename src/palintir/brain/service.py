@@ -27,12 +27,22 @@ from palintir.models import (
 )
 from palintir.redis_client import Channels, Keys, Subscriber, create_redis, publish
 
+from .actuator import Actuator
+from .automation import AutomationEngine
 from .context_builder import ContextBuilder
 from .conversation import ConversationManager
 from .identity_linker import IdentityLinker
 from .llm_client import LLMClient
 
 logger = structlog.get_logger()
+
+# Conditional import for cloud vision
+try:
+    from palintir.vision.cloud_vision import CloudVision
+
+    _CLOUD_VISION_AVAILABLE = True
+except ImportError:
+    _CLOUD_VISION_AVAILABLE = False
 
 
 class BrainService:
@@ -52,7 +62,11 @@ class BrainService:
         self._context_builder: ContextBuilder | None = None
         self._conversation: ConversationManager | None = None
         self._identity_linker: IdentityLinker | None = None
+        self._cloud_vision: CloudVision | None = None
+        self._automation: AutomationEngine | None = None
+        self._actuator: Actuator | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._automation_triggered = 0
 
     async def start(self) -> None:
         self._loop = asyncio.get_event_loop()
@@ -74,10 +88,26 @@ class BrainService:
             staleness_timeout=self._config.identity.identity_staleness_seconds,
         )
 
+        # Initialize cloud vision for object/scene queries
+        if _CLOUD_VISION_AVAILABLE and self._config.anthropic_api_key:
+            self._cloud_vision = CloudVision(
+                api_key=self._config.anthropic_api_key,
+                model=self._config.llm.default_model,
+            )
+
+        # Initialize automation engine and actuator
+        self._automation = AutomationEngine(self._db)
+        self._actuator = Actuator(
+            self._redis,
+            hardware=None,  # Brain doesn't own hardware; GPIO actions published for hardware owner
+            allow_shell=self._config.automation.allow_shell_commands,
+        )
+
         # Subscribe to events
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.SYSTEM_PRIVACY, self._on_privacy_toggle)
         self._subscriber.on(Channels.AUDIO_UTTERANCE, self._on_utterance)
+        self._subscriber.on(Channels.EVENTS_LOG, self._on_event_for_automation)
         await self._subscriber.start()
 
         self._running = True
@@ -130,11 +160,18 @@ class BrainService:
             speaker_id = linked.person_id
             speaker_name = linked.name
 
+        # Check if this is a visual/object question that needs cloud vision
+        visual_answer = await self._handle_visual_question(utterance.text, speaker_name)
+
         # Build context from room state
         context = await self._context_builder.build(
             speaker_name=speaker_name,
             speaker_id=speaker_id,
         )
+
+        # If cloud vision answered, include it in context
+        if visual_answer:
+            context += f"\n\n[VISUAL ANALYSIS]\n{visual_answer}"
 
         # Get conversation history
         history = self._conversation.get_recent_turns(person_id=speaker_id, limit=5)
@@ -180,6 +217,64 @@ class BrainService:
 
         logger.info("brain_responded", response=response_text[:100])
 
+        # Check voice command automation rules
+        if self._automation:
+            voice_triggers = self._automation.evaluate_voice_command(
+                utterance.text, speaker_id
+            )
+            for trigger in voice_triggers:
+                await self._fire_trigger(trigger)
+
+    async def _on_event_for_automation(self, data: dict) -> None:
+        """Evaluate person enter/exit events against automation rules."""
+        if self._privacy_mode or not self._automation:
+            return
+
+        try:
+            event = Event(**data)
+        except Exception:
+            return
+
+        if event.type not in (EventType.PERSON_ENTERED, EventType.PERSON_EXITED):
+            return
+
+        if not event.person_id:
+            return
+
+        role = event.data.get("role")
+        triggers = self._automation.evaluate_person_event(
+            event.type, event.person_id, role
+        )
+        for trigger in triggers:
+            await self._fire_trigger(trigger)
+
+    async def _fire_trigger(self, trigger) -> None:
+        """Publish an automation trigger, execute it, and log it."""
+        await publish(self._redis, Channels.BRAIN_ACTION, trigger)
+
+        # Execute via actuator (TTS + notification handled directly; GPIO needs hardware owner)
+        if self._actuator:
+            await self._actuator.execute(trigger)
+
+        self._automation_triggered += 1
+
+        # Log as event
+        event = Event(
+            type=EventType.AUTOMATION_TRIGGERED,
+            person_id=trigger.person_id,
+            data={
+                "rule_id": trigger.rule_id,
+                "action": trigger.action,
+                "params": trigger.params,
+            },
+        )
+        await publish(self._redis, Channels.EVENTS_LOG, event)
+        logger.info(
+            "automation_fired",
+            rule_id=trigger.rule_id,
+            action=trigger.action,
+        )
+
     def _should_use_complex_model(self, text: str) -> bool:
         """Decide if a query needs the more powerful (slower) model."""
         complex_triggers = [
@@ -188,6 +283,77 @@ class BrainService:
         ]
         lower = text.lower()
         return any(trigger in lower for trigger in complex_triggers)
+
+    def _is_visual_question(self, text: str) -> bool:
+        """Detect if a question requires looking at the camera feed."""
+        visual_triggers = [
+            "where is", "where are", "where's", "can you see",
+            "do you see", "what am i wearing", "what is he wearing",
+            "what is she wearing", "what color", "how many people",
+            "what's on the", "look at", "show me", "find the",
+            "what does", "look like", "what's in", "is there a",
+            "what am i holding", "what am i doing",
+        ]
+        lower = text.lower()
+        return any(trigger in lower for trigger in visual_triggers)
+
+    async def _handle_visual_question(
+        self, text: str, speaker_name: str | None
+    ) -> str | None:
+        """Handle questions that need visual analysis.
+
+        Strategy:
+        1. Check YOLO cache for simple object questions
+        2. Fall back to Claude Vision for complex questions
+        """
+        if not self._is_visual_question(text):
+            return None
+
+        # Try answering from YOLO cache first
+        cached = await self._redis.get(Keys.OBJECT_CACHE)
+        if cached:
+            import json
+            try:
+                objects = json.loads(cached)
+                lower = text.lower()
+
+                # Check if a specific object is mentioned in the cache
+                for obj in objects:
+                    if obj["label"].lower() in lower:
+                        loc = obj.get("location_description", "visible in frame")
+                        return (
+                            f"I can see a {obj['label']} {loc} "
+                            f"(confidence: {obj['confidence']:.0%})."
+                        )
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        # Cache miss or complex question - use Claude Vision
+        if self._cloud_vision and self._cloud_vision.is_available:
+            frame = await self._get_latest_frame_async()
+            context = f"The person asking is: {speaker_name or 'unknown'}"
+            vision_answer = await self._loop.run_in_executor(
+                None,
+                lambda: self._cloud_vision.analyze_frame(frame, text, context),
+            )
+            if vision_answer:
+                return vision_answer
+
+        return None
+
+    async def _get_latest_frame_async(self):
+        """Get the latest camera frame from Redis."""
+        import cv2
+        import numpy as np
+
+        frame_bytes = await self._redis.get(Keys.LATEST_FRAME)
+        if frame_bytes:
+            np_arr = np.frombuffer(frame_bytes, np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if frame is not None:
+                return frame
+
+        return np.zeros((480, 640, 3), dtype=np.uint8)
 
     async def _on_privacy_toggle(self, data: dict) -> None:
         event = PrivacyModeEvent(**data)
@@ -202,16 +368,37 @@ class BrainService:
             details={
                 "privacy_mode": self._privacy_mode,
                 "llm_available": self._llm.is_available if self._llm else False,
+                "automation_rules": self._automation.rule_count if self._automation else 0,
+                "automation_triggered": self._automation_triggered,
             },
         )
         await publish(self._redis, Channels.SYSTEM_STATUS, status)
 
     async def run(self) -> None:
         await self.start()
+        reload_counter = 0
+        last_schedule_minute = -1
         try:
             while self._running:
                 await self._publish_status(healthy=True)
+
+                # Check time-based schedule rules once per minute
+                if self._automation:
+                    from datetime import datetime
+                    now = datetime.now()
+                    if now.minute != last_schedule_minute:
+                        last_schedule_minute = now.minute
+                        triggers = self._automation.evaluate_schedule(now)
+                        for trigger in triggers:
+                            await self._fire_trigger(trigger)
+
                 await asyncio.sleep(10)
+
+                # Reload automation rules periodically (every ~5 min)
+                reload_counter += 1
+                if reload_counter >= 30 and self._automation:
+                    self._automation.reload()
+                    reload_counter = 0
         except asyncio.CancelledError:
             pass
         finally:

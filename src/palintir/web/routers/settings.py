@@ -26,3 +26,27 @@ async def toggle_privacy(enabled: bool, redis: aioredis.Redis = Depends(get_redi
     event = PrivacyModeEvent(enabled=enabled, source="web")
     await publish(redis, Channels.SYSTEM_PRIVACY, event)
     return {"privacy_mode": enabled}
+
+
+@router.get("/config")
+async def get_public_config():
+    """Return non-secret config values the UI can display."""
+    from palintir.config import load_config
+
+    cfg = load_config()
+    return {
+        "retention_days": cfg.privacy.data_retention_days,
+        "auto_delete_on_unenroll": cfg.privacy.auto_delete_on_unenroll,
+        "auth_configured": bool(cfg.auth_token),
+        "anthropic_configured": bool(cfg.anthropic_api_key),
+        "automation_enabled": cfg.automation.enabled,
+        "allow_shell_commands": cfg.automation.allow_shell_commands,
+        "camera": {
+            "width": cfg.camera.width,
+            "height": cfg.camera.height,
+            "fps": cfg.camera.fps,
+        },
+        "engagement": {
+            "smoothing_window_seconds": cfg.engagement.smoothing_window_seconds,
+        },
+    }

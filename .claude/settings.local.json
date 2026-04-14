@@ -32,7 +32,17 @@
       "Bash(python3 -m py_compile src/palintir/web/routers/enrollment.py)",
       "Bash(python3 -m py_compile src/palintir/web/routers/attendance.py)",
       "Bash(python3 -m py_compile src/palintir/audio/speaker_id.py)",
-      "Bash(python3 -m py_compile src/palintir/brain/identity_linker.py)"
+      "Bash(python3 -m py_compile src/palintir/brain/identity_linker.py)",
+      "Bash(python3 -m py_compile src/palintir/vision/object_detector.py)",
+      "Bash(python3 -m py_compile src/palintir/vision/cloud_vision.py)",
+      "Bash(python3 -m py_compile src/palintir/vision/engagement.py)",
+      "Bash(python3 -m py_compile src/palintir/eventlog/aggregator.py)",
+      "Bash(python3 -m py_compile src/palintir/eventlog/service.py)",
+      "Bash(python3 -m py_compile src/palintir/web/routers/engagement.py)",
+      "Bash(python3 -m py_compile src/palintir/config.py src/palintir/brain/automation.py src/palintir/brain/actuator.py src/palintir/brain/service.py src/palintir/web/main.py src/palintir/web/routers/automation.py src/palintir/web/routers/events.py src/palintir/web/routers/system.py src/palintir/web/routers/settings.py)",
+      "Bash(node -e \"const fs=require\\('fs'\\); ['App.tsx','components/EventLog/EventLogPage.tsx','components/Settings/SettingsPage.tsx','components/System/SystemPage.tsx','components/Automation/AutomationPage.tsx','components/Automation/RuleEditor.tsx'].forEach\\(f=>{try{fs.statSync\\('src/'+f\\);console.log\\(f+' exists'\\)}catch\\(e\\){console.log\\('MISSING '+f\\)}}\\)\")",
+      "Bash(python3 -m py_compile src/palintir/config.py src/palintir/brain/automation.py src/palintir/brain/actuator.py src/palintir/brain/service.py src/palintir/web/main.py src/palintir/web/routers/automation.py src/palintir/web/routers/events.py src/palintir/web/routers/system.py src/palintir/web/routers/settings.py src/palintir/vision/service.py src/palintir/eventlog/service.py src/palintir/web/routers/engagement.py src/palintir/vision/engagement.py src/palintir/eventlog/aggregator.py)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }

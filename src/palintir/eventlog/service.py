@@ -18,6 +18,8 @@ from palintir.logging import setup_logging
 from palintir.models import Event, ServiceStatus
 from palintir.redis_client import Channels, Subscriber, create_redis, publish
 
+from .aggregator import EngagementAggregator
+
 logger = structlog.get_logger()
 
 
@@ -32,13 +34,17 @@ class EventLogService:
         self._running = False
         self._start_time = time.monotonic()
         self._events_logged = 0
+        self._engagement_samples = 0
+        self._aggregator: EngagementAggregator | None = None
 
     async def start(self) -> None:
         self._redis = await create_redis(self._config)
         self._db = init_db(self._config)
+        self._aggregator = EngagementAggregator(self._db)
 
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.EVENTS_LOG, self._on_event)
+        self._subscriber.on(Channels.VISION_ENGAGEMENT, self._on_engagement)
         await self._subscriber.start()
 
         self._running = True
@@ -58,6 +64,33 @@ class EventLogService:
         except Exception:
             logger.exception("event_persist_error")
 
+    async def _on_engagement(self, data: dict) -> None:
+        """Persist engagement samples from the vision service."""
+        try:
+            engagements = data.get("engagements", [])
+            if not engagements or not self._aggregator:
+                return
+
+            # Get the current session ID
+            session = self._db.execute(
+                "SELECT id FROM sessions WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+            session_id = session["id"] if session else None
+
+            from palintir.models import EngagementState
+            for eng in engagements:
+                person_id = eng.get("person_id", "unknown")
+                if person_id.startswith("unknown_"):
+                    continue  # Skip unidentified poses
+
+                state = EngagementState(eng["state"])
+                confidence = eng.get("confidence", 0.0)
+                self._aggregator.save_sample(session_id, person_id, state, confidence)
+                self._engagement_samples += 1
+
+        except Exception:
+            logger.exception("engagement_persist_error")
+
     async def _run_retention_cleanup(self) -> None:
         """Delete events older than the retention period."""
         retention_days = self._config.privacy.data_retention_days
@@ -76,7 +109,10 @@ class EventLogService:
             name="eventlog",
             healthy=healthy,
             uptime_seconds=time.monotonic() - self._start_time,
-            details={"events_logged": self._events_logged},
+            details={
+                "events_logged": self._events_logged,
+                "engagement_samples": self._engagement_samples,
+            },
         )
         await publish(self._redis, Channels.SYSTEM_STATUS, status)
 
