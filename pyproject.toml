@@ -22,6 +22,8 @@ dependencies = [
     "gpiozero>=2.0.0",
     # Utilities
     "structlog>=24.0.0",
+    # TLS certificate generation (self-signed for local-network HTTPS)
+    "cryptography>=43.0.0",
 ]
 
 [project.optional-dependencies]
@@ -64,6 +66,7 @@ palintir-brain = "palintir.brain.service:main"
 palintir-tts = "palintir.tts.service:main"
 palintir-eventlog = "palintir.eventlog.service:main"
 palintir-web = "palintir.web.main:main"
+palintir-backup = "palintir.backup:main"
 
 [build-system]
 requires = ["hatchling"]

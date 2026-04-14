@@ -41,6 +41,11 @@ sample_rate = 22050
 [web]
 host = "0.0.0.0"
 port = 8080
+# HTTPS: set both paths to enable. A self-signed cert will be generated on
+# first boot if the files don't exist. Leave empty to serve plain HTTP
+# (safe only behind a reverse proxy that terminates TLS).
+tls_cert_file = ""
+tls_key_file = ""
 
 [privacy]
 data_retention_days = 90
@@ -64,3 +69,9 @@ exit_timeout_seconds = 300  # 5 minutes absent = exited
 [automation]
 enabled = true
 allow_shell_commands = false  # DANGEROUS: enable only on trusted networks
+
+[backup]
+enabled = true
+directory = "/var/lib/palintir/backups"
+keep_last_n = 14              # ~2 weeks of daily snapshots
+compress = true

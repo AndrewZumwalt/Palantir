@@ -13,13 +13,14 @@ from pydantic import BaseModel
 from palintir.config import PalintirConfig
 from palintir.redis_client import Keys
 from palintir.web.dependencies import get_config, get_db, get_redis, verify_auth
+from palintir.web.rate_limit import rate_limit_read, rate_limit_write
 
 router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(verify_auth)])
 
 SERVICE_NAMES = ["audio", "vision", "brain", "tts", "eventlog", "web"]
 
 
-@router.get("/status")
+@router.get("/status", dependencies=[Depends(rate_limit_read)])
 async def get_system_status(
     request: Request,
     redis: aioredis.Redis = Depends(get_redis),
@@ -82,12 +83,12 @@ class RetentionUpdate(BaseModel):
     retention_days: int
 
 
-@router.get("/retention")
+@router.get("/retention", dependencies=[Depends(rate_limit_read)])
 async def get_retention(config: PalintirConfig = Depends(get_config)):
     return {"retention_days": config.privacy.data_retention_days}
 
 
-@router.post("/retention/cleanup")
+@router.post("/retention/cleanup", dependencies=[Depends(rate_limit_write)])
 async def trigger_retention_cleanup(
     db: sqlite3.Connection = Depends(get_db),
     config: PalintirConfig = Depends(get_config),
@@ -110,7 +111,7 @@ async def trigger_retention_cleanup(
     }
 
 
-@router.get("/stats")
+@router.get("/stats", dependencies=[Depends(rate_limit_read)])
 async def get_stats(db: sqlite3.Connection = Depends(get_db)):
     """Aggregate counts for the system overview."""
     return {
@@ -129,7 +130,7 @@ async def get_stats(db: sqlite3.Connection = Depends(get_db)):
     }
 
 
-@router.get("/persons")
+@router.get("/persons", dependencies=[Depends(rate_limit_read)])
 async def list_persons(db: sqlite3.Connection = Depends(get_db)):
     """Small endpoint used by the automation UI for dropdowns."""
     rows = db.execute(

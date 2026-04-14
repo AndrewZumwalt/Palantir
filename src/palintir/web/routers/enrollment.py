@@ -6,7 +6,6 @@ capturing face photos, extracting embeddings, and storing them.
 
 from __future__ import annotations
 
-import base64
 import sqlite3
 import uuid
 from datetime import datetime
@@ -15,12 +14,20 @@ from pathlib import Path
 import cv2
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from palintir.config import PalintirConfig
 from palintir.vision.face_detector import FaceDetector
 from palintir.vision.face_recognizer import FaceRecognizer, embedding_to_blob
 from palintir.web.dependencies import get_config, get_db, verify_auth
+from palintir.web.rate_limit import rate_limit_enroll, rate_limit_read, rate_limit_write
+from palintir.web.validation import (
+    decode_base64_audio,
+    decode_base64_image,
+    validate_consent_text,
+    validate_name,
+    validate_role,
+)
 
 router = APIRouter(prefix="/api/enrollment", tags=["enrollment"], dependencies=[Depends(verify_auth)])
 
@@ -44,17 +51,17 @@ def _get_face_recognizer(db: sqlite3.Connection, config: PalintirConfig) -> Face
 
 
 class CreatePersonRequest(BaseModel):
-    name: str
-    role: str = "student"  # student, teacher, admin
+    name: str = Field(min_length=1, max_length=100)
+    role: str = Field(default="student", max_length=20)
 
 
 class FacePhotoRequest(BaseModel):
     """Base64-encoded JPEG image from the camera."""
-    image_base64: str
+    image_base64: str = Field(min_length=1, max_length=8_000_000)
 
 
 class ConsentRequest(BaseModel):
-    consent_text: str
+    consent_text: str = Field(min_length=1, max_length=4000)
 
 
 class EnrollmentStatus(BaseModel):
@@ -66,7 +73,7 @@ class EnrollmentStatus(BaseModel):
     complete: bool
 
 
-@router.get("/persons")
+@router.get("/persons", dependencies=[Depends(rate_limit_read)])
 async def list_persons(db: sqlite3.Connection = Depends(get_db)):
     """List all enrolled persons."""
     rows = db.execute(
@@ -78,22 +85,24 @@ async def list_persons(db: sqlite3.Connection = Depends(get_db)):
     return {"persons": [dict(row) for row in rows]}
 
 
-@router.post("/persons")
+@router.post("/persons", dependencies=[Depends(rate_limit_write)])
 async def create_person(
     req: CreatePersonRequest,
     db: sqlite3.Connection = Depends(get_db),
 ):
     """Create a new person profile (step 1 of enrollment)."""
+    name = validate_name(req.name)
+    role = validate_role(req.role)
     person_id = str(uuid.uuid4())
     db.execute(
         "INSERT INTO persons (id, name, role) VALUES (?, ?, ?)",
-        (person_id, req.name, req.role),
+        (person_id, name, role),
     )
     db.commit()
-    return {"person_id": person_id, "name": req.name, "role": req.role}
+    return {"person_id": person_id, "name": name, "role": role}
 
 
-@router.post("/persons/{person_id}/consent")
+@router.post("/persons/{person_id}/consent", dependencies=[Depends(rate_limit_write)])
 async def record_consent(
     person_id: str,
     req: ConsentRequest,
@@ -104,15 +113,16 @@ async def record_consent(
     if not row:
         raise HTTPException(status_code=404, detail="Person not found")
 
+    consent_text = validate_consent_text(req.consent_text)
     db.execute(
         "UPDATE persons SET consent_given_at = ?, consent_text = ? WHERE id = ?",
-        (datetime.now().isoformat(), req.consent_text, person_id),
+        (datetime.now().isoformat(), consent_text, person_id),
     )
     db.commit()
     return {"status": "consent_recorded"}
 
 
-@router.post("/persons/{person_id}/face")
+@router.post("/persons/{person_id}/face", dependencies=[Depends(rate_limit_enroll)])
 async def capture_face(
     person_id: str,
     req: FacePhotoRequest,
@@ -128,9 +138,9 @@ async def capture_face(
     if not row:
         raise HTTPException(status_code=404, detail="Person not found")
 
-    # Decode base64 image
+    # Decode + bound-check base64 image
+    image_bytes = decode_base64_image(req.image_base64)
     try:
-        image_bytes = base64.b64decode(req.image_base64)
         np_arr = np.frombuffer(image_bytes, np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if frame is None:
@@ -190,8 +200,8 @@ async def capture_face(
 
 class VoiceSampleRequest(BaseModel):
     """Base64-encoded WAV audio from the browser microphone."""
-    audio_base64: str
-    sample_rate: int = 16000
+    audio_base64: str = Field(min_length=1, max_length=6_000_000)
+    sample_rate: int = Field(default=16000, ge=8000, le=48000)
 
 
 class VoiceEnrollmentStatus(BaseModel):
@@ -218,7 +228,7 @@ def _get_speaker_identifier(db: sqlite3.Connection, config: PalintirConfig):
     return _speaker_identifier
 
 
-@router.post("/persons/{person_id}/voice")
+@router.post("/persons/{person_id}/voice", dependencies=[Depends(rate_limit_enroll)])
 async def capture_voice(
     person_id: str,
     req: VoiceSampleRequest,
@@ -238,9 +248,9 @@ async def capture_voice(
     if not identifier or not identifier.is_available:
         raise HTTPException(status_code=503, detail="Speaker ID model not available")
 
-    # Decode base64 audio
+    # Decode + bound-check base64 audio
+    audio_bytes = decode_base64_audio(req.audio_base64)
     try:
-        audio_bytes = base64.b64decode(req.audio_base64)
         audio = np.frombuffer(audio_bytes, dtype=np.int16)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid audio data")
@@ -279,7 +289,7 @@ async def capture_voice(
     )
 
 
-@router.get("/persons/{person_id}/status")
+@router.get("/persons/{person_id}/status", dependencies=[Depends(rate_limit_read)])
 async def enrollment_status(
     person_id: str,
     db: sqlite3.Connection = Depends(get_db),
@@ -313,7 +323,7 @@ async def enrollment_status(
     }
 
 
-@router.delete("/persons/{person_id}")
+@router.delete("/persons/{person_id}", dependencies=[Depends(rate_limit_write)])
 async def unenroll_person(
     person_id: str,
     db: sqlite3.Connection = Depends(get_db),

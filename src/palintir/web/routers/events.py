@@ -8,11 +8,12 @@ import sqlite3
 from fastapi import APIRouter, Depends, Query
 
 from palintir.web.dependencies import get_db, verify_auth
+from palintir.web.rate_limit import rate_limit_read, rate_limit_write
 
 router = APIRouter(prefix="/api/events", tags=["events"], dependencies=[Depends(verify_auth)])
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(rate_limit_read)])
 async def list_events(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -80,7 +81,7 @@ async def list_events(
     }
 
 
-@router.get("/types")
+@router.get("/types", dependencies=[Depends(rate_limit_read)])
 async def get_event_types(db: sqlite3.Connection = Depends(get_db)):
     """Return distinct event types present in the log."""
     rows = db.execute(
@@ -89,7 +90,7 @@ async def get_event_types(db: sqlite3.Connection = Depends(get_db)):
     return {"types": [r["type"] for r in rows]}
 
 
-@router.delete("/{event_id}")
+@router.delete("/{event_id}", dependencies=[Depends(rate_limit_write)])
 async def delete_event(event_id: int, db: sqlite3.Connection = Depends(get_db)):
     cursor = db.execute("DELETE FROM events WHERE id = ?", (event_id,))
     db.commit()

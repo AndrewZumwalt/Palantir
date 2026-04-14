@@ -7,8 +7,13 @@ import sqlite3
 from fastapi import APIRouter, Depends
 
 from palintir.web.dependencies import get_db, verify_auth
+from palintir.web.rate_limit import rate_limit_read
 
-router = APIRouter(prefix="/api/attendance", tags=["attendance"], dependencies=[Depends(verify_auth)])
+router = APIRouter(
+    prefix="/api/attendance",
+    tags=["attendance"],
+    dependencies=[Depends(verify_auth), Depends(rate_limit_read)],
+)
 
 
 @router.get("/current")

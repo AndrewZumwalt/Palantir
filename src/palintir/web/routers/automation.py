@@ -14,6 +14,8 @@ from palintir.brain.automation import (
     update_rule,
 )
 from palintir.web.dependencies import get_db, verify_auth
+from palintir.web.rate_limit import rate_limit_read, rate_limit_write
+from palintir.web.validation import validate_name, validate_rule_config
 
 router = APIRouter(prefix="/api/automation", tags=["automation"], dependencies=[Depends(verify_auth)])
 
@@ -55,21 +57,25 @@ def _validate_types(trigger_type: str | None, action_type: str | None) -> None:
         )
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(rate_limit_read)])
 async def get_rules(db: sqlite3.Connection = Depends(get_db)):
     return {"rules": list_rules(db)}
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(rate_limit_write)])
 async def create_new_rule(
     data: RuleCreate, db: sqlite3.Connection = Depends(get_db)
 ):
     _validate_types(data.trigger_type, data.action_type)
-    rule_id = create_rule(db, data.model_dump())
+    payload = data.model_dump()
+    payload["name"] = validate_name(payload["name"])
+    validate_rule_config(payload["trigger_config"], "trigger_config")
+    validate_rule_config(payload["action_config"], "action_config")
+    rule_id = create_rule(db, payload)
     return {"id": rule_id}
 
 
-@router.put("/{rule_id}")
+@router.put("/{rule_id}", dependencies=[Depends(rate_limit_write)])
 async def update_existing_rule(
     rule_id: str,
     data: RuleUpdate,
@@ -80,19 +86,26 @@ async def update_existing_rule(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
+    if "name" in updates:
+        updates["name"] = validate_name(updates["name"])
+    if "trigger_config" in updates:
+        validate_rule_config(updates["trigger_config"], "trigger_config")
+    if "action_config" in updates:
+        validate_rule_config(updates["action_config"], "action_config")
+
     if not update_rule(db, rule_id, updates):
         raise HTTPException(status_code=404, detail="Rule not found")
     return {"updated": True}
 
 
-@router.delete("/{rule_id}")
+@router.delete("/{rule_id}", dependencies=[Depends(rate_limit_write)])
 async def remove_rule(rule_id: str, db: sqlite3.Connection = Depends(get_db)):
     if not delete_rule(db, rule_id):
         raise HTTPException(status_code=404, detail="Rule not found")
     return {"deleted": True}
 
 
-@router.get("/trigger-types")
+@router.get("/trigger-types", dependencies=[Depends(rate_limit_read)])
 async def get_trigger_types():
     """Return the list of supported trigger and action types for the UI."""
     return {

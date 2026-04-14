@@ -8,8 +8,13 @@ from fastapi import APIRouter, Depends
 
 from palintir.eventlog.aggregator import EngagementAggregator
 from palintir.web.dependencies import get_db, verify_auth
+from palintir.web.rate_limit import rate_limit_read
 
-router = APIRouter(prefix="/api/engagement", tags=["engagement"], dependencies=[Depends(verify_auth)])
+router = APIRouter(
+    prefix="/api/engagement",
+    tags=["engagement"],
+    dependencies=[Depends(verify_auth), Depends(rate_limit_read)],
+)
 
 
 def _get_aggregator(db: sqlite3.Connection = Depends(get_db)) -> EngagementAggregator:

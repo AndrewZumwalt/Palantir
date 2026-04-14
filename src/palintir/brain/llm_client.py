@@ -2,6 +2,7 @@
 
 Handles conversation with the Claude API, including prompt caching
 and model selection (Haiku for fast responses, Sonnet for complex queries).
+Includes circuit-breaker for graceful degradation on outages.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import structlog
 
 from palintir.config import LLMConfig
+from palintir.resilience import CircuitBreaker
 
 logger = structlog.get_logger()
 
@@ -43,6 +45,11 @@ class LLMClient:
     def __init__(self, api_key: str, config: LLMConfig):
         self._config = config
         self._client: anthropic.Anthropic | None = None
+        self._breaker = CircuitBreaker(
+            failure_threshold=3,
+            recovery_timeout=30.0,
+            name="claude_api",
+        )
 
         if not _ANTHROPIC_AVAILABLE:
             logger.warning("anthropic_not_installed", hint="pip install anthropic")
@@ -52,8 +59,17 @@ class LLMClient:
             logger.warning("anthropic_api_key_missing")
             return
 
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = anthropic.Anthropic(api_key=api_key, timeout=15.0)
         logger.info("llm_client_initialized", default_model=config.default_model)
+
+    @property
+    def breaker_state(self) -> str:
+        return self._breaker.state.value
+
+    @property
+    def is_degraded(self) -> bool:
+        """True when the circuit is open (API is failing)."""
+        return self._breaker.state.value == "open"
 
     def chat(
         self,
@@ -74,7 +90,12 @@ class LLMClient:
             Claude's response text, or None on failure.
         """
         if not self._client:
-            return self._fallback_response(user_message)
+            return None  # caller will use offline_responder
+
+        # Circuit breaker: fail fast if API is known to be down
+        if not self._breaker.allow_request():
+            logger.info("llm_circuit_open_skipping", model=self._config.default_model)
+            return None
 
         model = self._config.complex_model if use_complex_model else self._config.default_model
 
@@ -103,6 +124,7 @@ class LLMClient:
             )
 
             text = response.content[0].text
+            self._breaker.record_success()
             logger.info(
                 "llm_response",
                 model=model,
@@ -113,19 +135,9 @@ class LLMClient:
             return text
 
         except Exception:
+            self._breaker.record_failure()
             logger.exception("llm_request_failed")
-            return self._fallback_response(user_message)
-
-    def _fallback_response(self, user_message: str) -> str:
-        """Simple fallback when the API is unavailable."""
-        lower = user_message.lower()
-        if "time" in lower:
-            from datetime import datetime
-            now = datetime.now()
-            return f"It's {now.strftime('%I:%M %p')}."
-        if "hello" in lower or "hi" in lower:
-            return "Hello! I'm Palintir, your classroom assistant. How can I help?"
-        return "I'm sorry, I'm having trouble connecting to my brain right now. Please try again in a moment."
+            return None
 
     @property
     def is_available(self) -> bool:

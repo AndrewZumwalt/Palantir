@@ -92,6 +92,10 @@ class TTSConfig:
 class WebConfig:
     host: str = "0.0.0.0"
     port: int = 8080
+    # TLS: if cert_file and key_file are set and readable, uvicorn starts
+    # with HTTPS. Leave unset for plain HTTP (e.g. behind a reverse proxy).
+    tls_cert_file: str = ""
+    tls_key_file: str = ""
 
 
 @dataclass
@@ -127,6 +131,14 @@ class AutomationConfig:
 
 
 @dataclass
+class BackupConfig:
+    enabled: bool = True
+    directory: str = "/var/lib/palintir/backups"
+    keep_last_n: int = 14  # ~2 weeks of daily backups
+    compress: bool = True
+
+
+@dataclass
 class PalintirConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
@@ -139,6 +151,7 @@ class PalintirConfig:
     engagement: EngagementConfig = field(default_factory=EngagementConfig)
     attendance: AttendanceConfig = field(default_factory=AttendanceConfig)
     automation: AutomationConfig = field(default_factory=AutomationConfig)
+    backup: BackupConfig = field(default_factory=BackupConfig)
 
     # Non-TOML config loaded from environment
     anthropic_api_key: str = ""
@@ -197,6 +210,7 @@ def load_config(environment: str | None = None) -> PalintirConfig:
         "engagement": config.engagement,
         "attendance": config.attendance,
         "automation": config.automation,
+        "backup": config.backup,
     }
 
     for section_name, section_dc in section_map.items():

@@ -16,6 +16,7 @@ from palintir.config import load_config
 from palintir.db import init_db
 from palintir.logging import setup_logging
 from palintir.models import Event, ServiceStatus
+from palintir.preflight import log_and_check, validate_for
 from palintir.redis_client import Channels, Subscriber, create_redis, publish
 
 from .aggregator import EngagementAggregator
@@ -38,6 +39,10 @@ class EventLogService:
         self._aggregator: EngagementAggregator | None = None
 
     async def start(self) -> None:
+        preflight = validate_for("eventlog", self._config)
+        if not log_and_check(preflight, fatal_on_error=False):
+            raise RuntimeError("eventlog preflight failed")
+
         self._redis = await create_redis(self._config)
         self._db = init_db(self._config)
         self._aggregator = EngagementAggregator(self._db)

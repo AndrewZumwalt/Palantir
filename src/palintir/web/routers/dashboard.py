@@ -10,8 +10,13 @@ from fastapi import APIRouter, Depends
 
 from palintir.redis_client import Keys
 from palintir.web.dependencies import get_db, get_redis, verify_auth
+from palintir.web.rate_limit import rate_limit_read
 
-router = APIRouter(prefix="/api/dashboard", tags=["dashboard"], dependencies=[Depends(verify_auth)])
+router = APIRouter(
+    prefix="/api/dashboard",
+    tags=["dashboard"],
+    dependencies=[Depends(verify_auth), Depends(rate_limit_read)],
+)
 
 
 @router.get("/status")

@@ -17,6 +17,7 @@ import structlog
 from palintir.config import load_config
 from palintir.db import init_db
 from palintir.logging import setup_logging
+from palintir.preflight import log_and_check, validate_for
 from palintir.models import (
     PrivacyModeEvent,
     ServiceStatus,
@@ -75,6 +76,10 @@ class AudioService:
 
     async def start(self) -> None:
         """Initialize and start all audio pipeline components."""
+        preflight = validate_for("audio", self._config)
+        if not log_and_check(preflight, fatal_on_error=False):
+            raise RuntimeError("audio preflight failed")
+
         self._loop = asyncio.get_event_loop()
         self._redis = await create_redis(self._config)
 

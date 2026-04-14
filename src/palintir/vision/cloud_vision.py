@@ -14,6 +14,8 @@ import cv2
 import numpy as np
 import structlog
 
+from palintir.resilience import CircuitBreaker
+
 logger = structlog.get_logger()
 
 try:
@@ -30,6 +32,11 @@ class CloudVision:
     def __init__(self, api_key: str, model: str = "claude-haiku-4-5-20250301"):
         self._client: anthropic.Anthropic | None = None
         self._model = model
+        self._breaker = CircuitBreaker(
+            failure_threshold=3,
+            recovery_timeout=60.0,
+            name="claude_vision",
+        )
 
         if not _ANTHROPIC_AVAILABLE:
             logger.warning("anthropic_not_installed")
@@ -39,7 +46,7 @@ class CloudVision:
             logger.warning("anthropic_api_key_missing")
             return
 
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = anthropic.Anthropic(api_key=api_key, timeout=15.0)
         logger.info("cloud_vision_initialized", model=model)
 
     def analyze_frame(
@@ -59,6 +66,10 @@ class CloudVision:
             Claude's analysis of the scene, or None on failure.
         """
         if not self._client:
+            return None
+
+        if not self._breaker.allow_request():
+            logger.info("cloud_vision_circuit_open_skipping")
             return None
 
         # Encode frame as JPEG
@@ -104,6 +115,7 @@ class CloudVision:
             )
 
             text = response.content[0].text
+            self._breaker.record_success()
             logger.info(
                 "cloud_vision_response",
                 tokens_in=response.usage.input_tokens,
@@ -113,6 +125,7 @@ class CloudVision:
             return text
 
         except Exception:
+            self._breaker.record_failure()
             logger.exception("cloud_vision_error")
             return None
 

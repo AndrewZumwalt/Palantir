@@ -42,7 +42,18 @@
       "Bash(python3 -m py_compile src/palintir/config.py src/palintir/brain/automation.py src/palintir/brain/actuator.py src/palintir/brain/service.py src/palintir/web/main.py src/palintir/web/routers/automation.py src/palintir/web/routers/events.py src/palintir/web/routers/system.py src/palintir/web/routers/settings.py)",
       "Bash(node -e \"const fs=require\\('fs'\\); ['App.tsx','components/EventLog/EventLogPage.tsx','components/Settings/SettingsPage.tsx','components/System/SystemPage.tsx','components/Automation/AutomationPage.tsx','components/Automation/RuleEditor.tsx'].forEach\\(f=>{try{fs.statSync\\('src/'+f\\);console.log\\(f+' exists'\\)}catch\\(e\\){console.log\\('MISSING '+f\\)}}\\)\")",
       "Bash(python3 -m py_compile src/palintir/config.py src/palintir/brain/automation.py src/palintir/brain/actuator.py src/palintir/brain/service.py src/palintir/web/main.py src/palintir/web/routers/automation.py src/palintir/web/routers/events.py src/palintir/web/routers/system.py src/palintir/web/routers/settings.py src/palintir/vision/service.py src/palintir/eventlog/service.py src/palintir/web/routers/engagement.py src/palintir/vision/engagement.py src/palintir/eventlog/aggregator.py)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(python3 -m py_compile src/palintir/web/rate_limit.py src/palintir/web/validation.py src/palintir/web/routers/enrollment.py src/palintir/web/routers/automation.py src/palintir/web/routers/events.py src/palintir/web/routers/settings.py src/palintir/web/routers/system.py src/palintir/web/routers/dashboard.py src/palintir/web/routers/attendance.py src/palintir/web/routers/engagement.py)",
+      "Bash(python3 -m py_compile src/palintir/backup.py src/palintir/config.py)",
+      "Bash(python3 -m py_compile src/palintir/web/tls.py src/palintir/web/main.py src/palintir/config.py src/palintir/preflight.py)",
+      "Bash(python3 -m py_compile src/palintir/resilience.py src/palintir/preflight.py src/palintir/backup.py src/palintir/config.py src/palintir/brain/offline_responder.py src/palintir/brain/llm_client.py src/palintir/brain/service.py src/palintir/vision/cloud_vision.py src/palintir/vision/service.py src/palintir/audio/service.py src/palintir/tts/service.py src/palintir/eventlog/service.py src/palintir/web/main.py src/palintir/web/tls.py src/palintir/web/rate_limit.py src/palintir/web/validation.py src/palintir/web/routers/enrollment.py src/palintir/web/routers/automation.py src/palintir/web/routers/events.py src/palintir/web/routers/settings.py src/palintir/web/routers/system.py src/palintir/web/routers/dashboard.py src/palintir/web/routers/attendance.py src/palintir/web/routers/engagement.py)",
+      "Bash(xargs python3:*)",
+      "Bash(python3 -c ':*)",
+      "Bash(python3 -c \"from palintir.config import load_config; c = load_config\\(\\); print\\('config loaded:', c.web.host, c.web.port\\)\")",
+      "Bash(PYTHONPATH=src python3 -c \"from palintir.config import load_config; c = load_config\\(\\); print\\('config loaded host=%s port=%s tls_cert=%r backup_dir=%s' % \\(c.web.host, c.web.port, c.web.tls_cert_file, c.backup.directory\\)\\)\")",
+      "Bash(/Users/andrew.zumwalt26/Palintir/.venv/bin/pip install:*)",
+      "Bash(.venv/bin/python -c ':*)",
+      "Bash(.venv/bin/pip install:*)"
     ]
   }
 }

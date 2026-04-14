@@ -1,0 +1,21 @@
+# Production overrides (Raspberry Pi deployment)
+#
+# Applied on top of default.toml when PALINTIR_ENV=production.
+
+[web]
+host = "0.0.0.0"
+port = 8080
+# Enable HTTPS with a self-signed cert. On first boot the web service
+# generates a cert valid for localhost, the Pi hostname, palintir.local,
+# and the primary LAN IP. Teachers add the browser exception once.
+tls_cert_file = "/var/lib/palintir/tls/cert.pem"
+tls_key_file = "/var/lib/palintir/tls/key.pem"
+
+[backup]
+enabled = true
+directory = "/var/lib/palintir/backups"
+keep_last_n = 14
+compress = true
+
+[redis]
+url = "unix:///var/run/redis/redis.sock"

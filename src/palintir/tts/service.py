@@ -15,6 +15,7 @@ import structlog
 from palintir.config import load_config
 from palintir.logging import setup_logging
 from palintir.models import AssistantResponse, PrivacyModeEvent, ServiceStatus
+from palintir.preflight import log_and_check, validate_for
 from palintir.redis_client import Channels, Keys, Subscriber, create_redis, publish
 
 from .audio_output import AudioOutput
@@ -41,6 +42,10 @@ class TTSService:
         self._output: AudioOutput | None = None
 
     async def start(self) -> None:
+        preflight = validate_for("tts", self._config)
+        if not log_and_check(preflight, fatal_on_error=False):
+            raise RuntimeError("tts preflight failed")
+
         self._loop = asyncio.get_event_loop()
         self._redis = await create_redis(self._config)
 

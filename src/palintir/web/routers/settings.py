@@ -8,18 +8,19 @@ from fastapi import APIRouter, Depends
 from palintir.models import PrivacyModeEvent
 from palintir.redis_client import Channels, Keys, publish
 from palintir.web.dependencies import get_redis, verify_auth
+from palintir.web.rate_limit import rate_limit_read, rate_limit_write
 
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(verify_auth)])
 
 
-@router.get("/privacy")
+@router.get("/privacy", dependencies=[Depends(rate_limit_read)])
 async def get_privacy_status(redis: aioredis.Redis = Depends(get_redis)):
     """Get current privacy mode status."""
     enabled = await redis.get(Keys.PRIVACY_MODE) == "1"
     return {"privacy_mode": enabled}
 
 
-@router.post("/privacy")
+@router.post("/privacy", dependencies=[Depends(rate_limit_write)])
 async def toggle_privacy(enabled: bool, redis: aioredis.Redis = Depends(get_redis)):
     """Toggle privacy mode on/off."""
     await redis.set(Keys.PRIVACY_MODE, "1" if enabled else "0")
@@ -28,7 +29,7 @@ async def toggle_privacy(enabled: bool, redis: aioredis.Redis = Depends(get_redi
     return {"privacy_mode": enabled}
 
 
-@router.get("/config")
+@router.get("/config", dependencies=[Depends(rate_limit_read)])
 async def get_public_config():
     """Return non-secret config values the UI can display."""
     from palintir.config import load_config

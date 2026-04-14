@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from palintir.config import PalintirConfig, load_config
 from palintir.db import init_db
 from palintir.logging import setup_logging
+from palintir.preflight import log_and_check, validate_for
 from palintir.redis_client import Channels, Subscriber, create_redis
 
 from .routers import (
@@ -44,6 +45,9 @@ FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent.parent / "frontend
 async def lifespan(app: FastAPI):
     """Application lifecycle: setup and teardown shared resources."""
     config = load_config()
+    preflight = validate_for("web", config)
+    log_and_check(preflight, fatal_on_error=False)
+
     redis = await create_redis(config)
     db = init_db(config)
 
@@ -161,6 +165,21 @@ def main() -> None:
     setup_logging("web")
     config = load_config()
 
+    # Optional TLS. Self-sign on first run if the user configured paths but
+    # hasn't provisioned a cert yet — typical home deployment.
+    ssl_kwargs: dict = {}
+    if config.web.tls_cert_file and config.web.tls_key_file:
+        from .tls import ensure_tls_materials
+
+        materials = ensure_tls_materials(
+            config.web.tls_cert_file, config.web.tls_key_file
+        )
+        if materials:
+            ssl_kwargs["ssl_certfile"], ssl_kwargs["ssl_keyfile"] = materials
+            logger.info("web_tls_enabled", cert=ssl_kwargs["ssl_certfile"])
+        else:
+            logger.warning("web_tls_disabled_missing_materials")
+
     uvicorn.run(
         "palintir.web.main:create_app",
         factory=True,
@@ -168,6 +187,7 @@ def main() -> None:
         port=config.web.port,
         workers=1,
         log_level="info",
+        **ssl_kwargs,
     )
 
 

@@ -25,7 +25,9 @@ from palintir.models import (
     ServiceStatus,
     Utterance,
 )
+from palintir.preflight import log_and_check, validate_for
 from palintir.redis_client import Channels, Keys, Subscriber, create_redis, publish
+from palintir.resilience import NetworkMonitor
 
 from .actuator import Actuator
 from .automation import AutomationEngine
@@ -33,6 +35,7 @@ from .context_builder import ContextBuilder
 from .conversation import ConversationManager
 from .identity_linker import IdentityLinker
 from .llm_client import LLMClient
+from .offline_responder import generate_offline_response
 
 logger = structlog.get_logger()
 
@@ -65,10 +68,16 @@ class BrainService:
         self._cloud_vision: CloudVision | None = None
         self._automation: AutomationEngine | None = None
         self._actuator: Actuator | None = None
+        self._network_monitor: NetworkMonitor | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._automation_triggered = 0
 
     async def start(self) -> None:
+        # Preflight checks — warn loudly about missing deps/config
+        preflight = validate_for("brain", self._config)
+        if not log_and_check(preflight, fatal_on_error=False):
+            raise RuntimeError("brain preflight failed")
+
         self._loop = asyncio.get_event_loop()
         self._redis = await create_redis(self._config)
         self._db = init_db(self._config)
@@ -94,6 +103,10 @@ class BrainService:
                 api_key=self._config.anthropic_api_key,
                 model=self._config.llm.default_model,
             )
+
+        # Start network monitor for offline detection
+        self._network_monitor = NetworkMonitor(check_interval_seconds=30.0)
+        await self._network_monitor.start()
 
         # Initialize automation engine and actuator
         self._automation = AutomationEngine(self._db)
@@ -179,19 +192,36 @@ class BrainService:
         # Determine if we need the complex model
         use_complex = self._should_use_complex_model(utterance.text)
 
-        # Call Claude API (run in executor since it's synchronous)
-        response_text = await self._loop.run_in_executor(
-            None,
-            lambda: self._llm.chat(
-                user_message=utterance.text,
-                context=context,
-                conversation_history=history,
-                use_complex_model=use_complex,
-            ),
-        )
+        # Decide whether to even attempt the cloud call
+        network_ok = not self._network_monitor or self._network_monitor.online
+        api_degraded = self._llm.is_degraded if self._llm else True
 
+        response_text: str | None = None
+        if network_ok and not api_degraded and self._llm and self._llm.is_available:
+            # Call Claude API (run in executor since it's synchronous)
+            response_text = await self._loop.run_in_executor(
+                None,
+                lambda: self._llm.chat(
+                    user_message=utterance.text,
+                    context=context,
+                    conversation_history=history,
+                    use_complex_model=use_complex,
+                ),
+            )
+
+        # Offline fallback: generate a deterministic reply from local state
         if not response_text:
-            response_text = "I'm sorry, I couldn't process that. Could you try again?"
+            visible_names = await self._get_visible_person_names()
+            response_text = generate_offline_response(
+                user_text=utterance.text,
+                visible_person_names=visible_names,
+                speaker_name=speaker_name,
+            )
+            logger.info(
+                "brain_offline_response",
+                network_ok=network_ok,
+                api_degraded=api_degraded,
+            )
 
         # Save conversation turn
         self._conversation.save_turn(
@@ -341,6 +371,22 @@ class BrainService:
 
         return None
 
+    async def _get_visible_person_names(self) -> list[str]:
+        """Return names of currently visible people from Redis."""
+        try:
+            visible = await self._redis.hgetall(Keys.VISIBLE_PERSONS)
+            names: list[str] = []
+            for raw in visible.values():
+                try:
+                    data = json.loads(raw)
+                    if "name" in data:
+                        names.append(data["name"])
+                except (json.JSONDecodeError, KeyError):
+                    continue
+            return names
+        except Exception:
+            return []
+
     async def _get_latest_frame_async(self):
         """Get the latest camera frame from Redis."""
         import cv2
@@ -368,6 +414,8 @@ class BrainService:
             details={
                 "privacy_mode": self._privacy_mode,
                 "llm_available": self._llm.is_available if self._llm else False,
+                "llm_circuit": self._llm.breaker_state if self._llm else "n/a",
+                "online": self._network_monitor.online if self._network_monitor else True,
                 "automation_rules": self._automation.rule_count if self._automation else 0,
                 "automation_triggered": self._automation_triggered,
             },
@@ -408,6 +456,8 @@ class BrainService:
         self._running = False
         if self._subscriber:
             await self._subscriber.stop()
+        if self._network_monitor:
+            await self._network_monitor.stop()
         if self._db:
             self._db.close()
         if self._redis:
