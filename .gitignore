@@ -20,8 +20,9 @@ models/
 *.db-shm
 
 # Frontend build
-frontend/node_modules/
+**/node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 # OS
 .DS_Store
@@ -37,3 +38,7 @@ logs/
 
 # Enrollment data
 enrollments/
+
+# Local dev tooling / state (Mac dev environment)
+.tools/
+.dev-data/

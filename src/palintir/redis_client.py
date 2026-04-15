@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any, Callable
 
 import redis.asyncio as aioredis
@@ -12,6 +13,11 @@ import structlog
 from palintir.config import PalintirConfig
 
 logger = structlog.get_logger()
+
+# Process-wide shared fakeredis server so every service/connection in a dev
+# process sees the same pub/sub + keyspace. Only used when
+# PALINTIR_REDIS_FAKE=1 is set.
+_fake_server = None
 
 
 # Redis channel names
@@ -41,7 +47,30 @@ class Keys:
 
 
 async def create_redis(config: PalintirConfig) -> aioredis.Redis:
-    """Create a Redis connection, trying Unix socket first then TCP fallback."""
+    """Create a Redis connection, trying Unix socket first then TCP fallback.
+
+    Set `PALINTIR_REDIS_FAKE=1` to use an in-process fakeredis instead
+    (development/testing on machines without a real redis-server).
+    """
+    if os.environ.get("PALINTIR_REDIS_FAKE") == "1":
+        global _fake_server
+        try:
+            import fakeredis
+            import fakeredis.aioredis
+        except ImportError as e:
+            raise RuntimeError(
+                "PALINTIR_REDIS_FAKE=1 but fakeredis is not installed. "
+                "Install dev extras: pip install -e '.[dev]'"
+            ) from e
+        if _fake_server is None:
+            _fake_server = fakeredis.FakeServer()
+        r = fakeredis.aioredis.FakeRedis(
+            server=_fake_server, decode_responses=True
+        )
+        await r.ping()
+        logger.info("redis_connected", url="fakeredis://in-process")
+        return r
+
     try:
         r = aioredis.from_url(config.redis.url, decode_responses=True)
         await r.ping()

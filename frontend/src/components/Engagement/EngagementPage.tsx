@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../../api/client";
 import { useWebSocket } from "../../hooks/useWebSocket";
 import EngagementHeatmap from "./EngagementHeatmap";
