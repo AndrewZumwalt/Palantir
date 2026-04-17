@@ -61,7 +61,7 @@ function ServiceCard({ service }: { service: ServiceStatus }) {
         <div className="flex items-center gap-3">
           <span className={`w-2.5 h-2.5 rounded-full ${statusColor}`} />
           <h3 className="text-base font-semibold capitalize">
-            palintir-{service.name}
+            palantir-{service.name}
           </h3>
         </div>
         <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
@@ -126,7 +126,7 @@ export default function SystemPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">System Status</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Live health of the six Palintir microservices
+          Live health of the six Palantir microservices
         </p>
       </div>
 

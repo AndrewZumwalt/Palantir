@@ -24,7 +24,7 @@ export default function Layout() {
                 <span className="text-white font-bold text-sm">P</span>
               </div>
               <span className="text-xl font-semibold tracking-tight">
-                Palintir
+                Palantir
               </span>
             </div>
 

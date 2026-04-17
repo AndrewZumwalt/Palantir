@@ -1,11 +1,32 @@
 const API_BASE = "/api";
+const AUTH_TOKEN_KEY = "palantir_auth_token";
 
-function getAuthToken(): string | null {
-  return localStorage.getItem("palintir_auth_token");
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+// Global listener for auth failures so an AuthGate component can react.
+// We deliberately do NOT auto-reload on 401 — that caused an infinite loop
+// whenever the token was missing or stale.
+type AuthFailHandler = () => void;
+const authFailHandlers = new Set<AuthFailHandler>();
+export function onAuthFail(handler: AuthFailHandler): () => void {
+  authFailHandlers.add(handler);
+  return () => authFailHandlers.delete(handler);
+}
+
+export function getAuthToken(): string | null {
+  return localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
 export function setAuthToken(token: string): void {
-  localStorage.setItem("palintir_auth_token", token);
+  localStorage.setItem(AUTH_TOKEN_KEY, token);
+}
+
+export function clearAuthToken(): void {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
 }
 
 async function request<T>(
@@ -29,10 +50,14 @@ async function request<T>(
 
   if (!response.ok) {
     if (response.status === 401) {
-      localStorage.removeItem("palintir_auth_token");
-      window.location.reload();
+      // Notify subscribers (AuthGate) that the token is missing / invalid.
+      // Do NOT clear + reload — that loops forever with no login UI.
+      authFailHandlers.forEach((h) => h());
     }
-    throw new Error(`API error: ${response.status} ${response.statusText}`);
+    throw new ApiError(
+      response.status,
+      `API error: ${response.status} ${response.statusText}`,
+    );
   }
 
   return response.json();

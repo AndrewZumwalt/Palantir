@@ -28,7 +28,7 @@ export default function VoiceCapture({
   const chunksRef = useRef<Blob[]>([]);
 
   const prompts = [
-    "Please say: 'Hello Palintir, my name is " + personName + "'",
+    "Please say: 'Hello Palantir, my name is " + personName + "'",
     "Please say: 'The quick brown fox jumps over the lazy dog'",
     "Please say: 'Today is a great day to learn something new'",
     "Please say: 'Can you tell me what time the class ends?'",

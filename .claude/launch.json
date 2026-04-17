@@ -5,7 +5,7 @@
       "name": "backend",
       "runtimeExecutable": ".venv/bin/uvicorn",
       "runtimeArgs": [
-        "palintir.web.main:create_app",
+        "palantir.web.main:create_app",
         "--factory",
         "--host",
         "127.0.0.1",
@@ -16,11 +16,11 @@
       ],
       "port": 8080,
       "env": {
-        "PALINTIR_ENV": "development",
-        "PALINTIR_REDIS_FAKE": "1",
-        "PALINTIR_DB_PATH": ".dev-data/palintir.db",
-        "PALINTIR_ENROLLMENT_PATH": ".dev-data/enrollments",
-        "PALINTIR_AUTH_TOKEN": "devtoken"
+        "PALANTIR_ENV": "development",
+        "PALANTIR_REDIS_FAKE": "1",
+        "PALANTIR_DB_PATH": ".dev-data/palantir.db",
+        "PALANTIR_ENROLLMENT_PATH": ".dev-data/enrollments",
+        "PALANTIR_AUTH_TOKEN": "devtoken"
       }
     },
     {

@@ -1,5 +1,5 @@
 [project]
-name = "palintir"
+name = "palantir"
 version = "0.1.0"
 description = "AI-powered classroom assistant for Raspberry Pi 5"
 requires-python = ">=3.11"
@@ -50,7 +50,7 @@ objects = [
 ]
 # All ML dependencies
 ml = [
-    "palintir[voice,face,speaker,objects]",
+    "palantir[voice,face,speaker,objects]",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -62,20 +62,20 @@ dev = [
 ]
 
 [project.scripts]
-palintir-audio = "palintir.audio.service:main"
-palintir-vision = "palintir.vision.service:main"
-palintir-brain = "palintir.brain.service:main"
-palintir-tts = "palintir.tts.service:main"
-palintir-eventlog = "palintir.eventlog.service:main"
-palintir-web = "palintir.web.main:main"
-palintir-backup = "palintir.backup:main"
+palantir-audio = "palantir.audio.service:main"
+palantir-vision = "palantir.vision.service:main"
+palantir-brain = "palantir.brain.service:main"
+palantir-tts = "palantir.tts.service:main"
+palantir-eventlog = "palantir.eventlog.service:main"
+palantir-web = "palantir.web.main:main"
+palantir-backup = "palantir.backup:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/palintir"]
+packages = ["src/palantir"]
 
 [tool.ruff]
 line-length = 100

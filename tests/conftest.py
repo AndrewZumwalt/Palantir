@@ -1,4 +1,4 @@
-"""Shared test fixtures for Palintir."""
+"""Shared test fixtures for Palantir."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 # Force development environment for tests
-os.environ["PALINTIR_ENV"] = "development"
+os.environ["PALANTIR_ENV"] = "development"
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def temp_db():
     conn.execute("PRAGMA foreign_keys=ON")
 
     # Apply initial schema
-    migrations_dir = Path(__file__).parent.parent / "src" / "palintir" / "migrations"
+    migrations_dir = Path(__file__).parent.parent / "src" / "palantir" / "migrations"
     for migration_file in sorted(migrations_dir.glob("*.sql")):
         conn.executescript(migration_file.read_text())
 
@@ -38,6 +38,6 @@ def temp_db():
 @pytest.fixture
 def config():
     """Load test configuration."""
-    from palintir.config import load_config
+    from palantir.config import load_config
 
     return load_config("development")

@@ -1,0 +1,14 @@
+[Unit]
+Description=Nightly Palantir database backup
+Requires=palantir-backup.service
+
+[Timer]
+# Runs daily at 03:15 local time. Persistent=true catches up missed runs
+# after reboots or planned downtime.
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+RandomizedDelaySec=15min
+Unit=palantir-backup.service
+
+[Install]
+WantedBy=timers.target

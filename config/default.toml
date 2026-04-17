@@ -72,6 +72,6 @@ allow_shell_commands = false  # DANGEROUS: enable only on trusted networks
 
 [backup]
 enabled = true
-directory = "/var/lib/palintir/backups"
+directory = "/var/lib/palantir/backups"
 keep_last_n = 14              # ~2 weeks of daily snapshots
 compress = true

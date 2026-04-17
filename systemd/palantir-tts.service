@@ -1,0 +1,26 @@
+[Unit]
+Description=Palantir TTS Service
+After=redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=palantir
+Group=palantir
+WorkingDirectory=/opt/palantir
+Environment=PALANTIR_ENV=production
+EnvironmentFile=/opt/palantir/.env
+ExecStart=/opt/palantir/.venv/bin/palantir-tts
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/palantir
+
+SupplementaryGroups=audio
+
+[Install]
+WantedBy=multi-user.target

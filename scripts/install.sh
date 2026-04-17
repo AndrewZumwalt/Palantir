@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Palintir - Raspberry Pi Installation Script
+# Palantir - Raspberry Pi Installation Script
 # Run as root on a fresh Raspberry Pi OS (Bookworm)
 #
 # Flags:
 #   --skip-apt        Skip apt-get entirely (use when mirror is blocked;
 #                     Pi OS Bookworm ships python3/venv; add redis manually later)
-#   --use-fakeredis   Wire PALINTIR_REDIS_FAKE=1 in .env so the web service
+#   --use-fakeredis   Wire PALANTIR_REDIS_FAKE=1 in .env so the web service
 #                     runs without redis-server (same as Mac dev mode)
 set -euo pipefail
 
-INSTALL_DIR="/opt/palintir"
-DATA_DIR="/var/lib/palintir"
-SERVICE_USER="palintir"
+INSTALL_DIR="/opt/palantir"
+DATA_DIR="/var/lib/palantir"
+SERVICE_USER="palantir"
 SKIP_APT=0
 USE_FAKEREDIS=0
 
@@ -22,7 +22,7 @@ for arg in "$@"; do
     esac
 done
 
-echo "=== Palintir Installation ==="
+echo "=== Palantir Installation ==="
 [ "$SKIP_APT" = "1" ]       && echo "  (--skip-apt: skipping system package install)"
 [ "$USE_FAKEREDIS" = "1" ]  && echo "  (--use-fakeredis: using in-process Redis shim)"
 
@@ -95,10 +95,10 @@ AUTH_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
 
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     cp "$INSTALL_DIR/config/.env.example" "$INSTALL_DIR/.env"
-    sed -i "s|PALINTIR_AUTH_TOKEN=|PALINTIR_AUTH_TOKEN=$AUTH_TOKEN|" "$INSTALL_DIR/.env"
-    echo "PALINTIR_ENV=production" >> "$INSTALL_DIR/.env"
+    sed -i "s|PALANTIR_AUTH_TOKEN=|PALANTIR_AUTH_TOKEN=$AUTH_TOKEN|" "$INSTALL_DIR/.env"
+    echo "PALANTIR_ENV=production" >> "$INSTALL_DIR/.env"
     if [ "$USE_FAKEREDIS" = "1" ]; then
-        echo "PALINTIR_REDIS_FAKE=1" >> "$INSTALL_DIR/.env"
+        echo "PALANTIR_REDIS_FAKE=1" >> "$INSTALL_DIR/.env"
         echo "  (fakeredis: in-process Redis, no redis-server needed)"
     fi
     chmod 600 "$INSTALL_DIR/.env"
@@ -118,18 +118,18 @@ systemctl daemon-reload
 
 # Enable long-running services
 for svc in audio vision brain tts eventlog web; do
-    systemctl enable "palintir-$svc.service"
+    systemctl enable "palantir-$svc.service"
 done
 
 # Enable the nightly backup timer (the service unit runs on demand)
-systemctl enable palintir-backup.timer
+systemctl enable palantir-backup.timer
 
 # 8. Configure firewall (default-deny, permit 8080 only)
 echo "[8/9] Configuring firewall..."
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow OpenSSH
-ufw allow 8080/tcp comment "Palintir Web UI"
+ufw allow 8080/tcp comment "Palantir Web UI"
 ufw --force enable
 
 # 9. Configure Redis for Unix socket (safer than TCP for same-host IPC)
@@ -137,7 +137,7 @@ echo "[9/9] Configuring Redis..."
 if ! grep -q "unixsocket /var/run/redis/redis.sock" /etc/redis/redis.conf; then
     cat >> /etc/redis/redis.conf <<EOF
 
-# Palintir: enable Unix socket (restricted to redis+palintir group)
+# Palantir: enable Unix socket (restricted to redis+palantir group)
 unixsocket /var/run/redis/redis.sock
 unixsocketperm 770
 # Disable TCP listener — LAN exposure is unnecessary
@@ -152,9 +152,9 @@ echo ""
 echo "=== Installation Complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Edit /opt/palintir/.env and add your ANTHROPIC_API_KEY"
-echo "  2. Start all services: sudo systemctl start palintir-{audio,vision,brain,tts,eventlog,web}"
-echo "  3. Start the backup timer now: sudo systemctl start palintir-backup.timer"
+echo "  1. Edit /opt/palantir/.env and add your ANTHROPIC_API_KEY"
+echo "  2. Start all services: sudo systemctl start palantir-{audio,vision,brain,tts,eventlog,web}"
+echo "  3. Start the backup timer now: sudo systemctl start palantir-backup.timer"
 echo "  4. Access the web UI: https://$(hostname -I | awk '{print $1}'):8080"
 echo "     (First load generates a self-signed cert; accept the browser warning)"
 echo "  5. Use auth token: $AUTH_TOKEN"

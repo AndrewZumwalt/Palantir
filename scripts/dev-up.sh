@@ -13,7 +13,7 @@ cd "$PROJECT_ROOT"
 VENV="$PROJECT_ROOT/.venv"
 DATA_DIR="$PROJECT_ROOT/.dev-data"
 
-echo "=== Palintir dev launcher ==="
+echo "=== Palantir dev launcher ==="
 echo "Project: $PROJECT_ROOT"
 
 # 1. venv
@@ -56,15 +56,15 @@ fi
 mkdir -p "$DATA_DIR/enrollments" "$DATA_DIR/models" "$DATA_DIR/backups" "$DATA_DIR/tls"
 
 # 5. dev env
-AUTH_TOKEN="${PALINTIR_AUTH_TOKEN:-devtoken}"
-export PALINTIR_ENV="development"
-export PALINTIR_REDIS_FAKE="1"
-export PALINTIR_DB_PATH="$DATA_DIR/palintir.db"
-export PALINTIR_ENROLLMENT_PATH="$DATA_DIR/enrollments"
-export PALINTIR_AUTH_TOKEN="$AUTH_TOKEN"
+AUTH_TOKEN="${PALANTIR_AUTH_TOKEN:-devtoken}"
+export PALANTIR_ENV="development"
+export PALANTIR_REDIS_FAKE="1"
+export PALANTIR_DB_PATH="$DATA_DIR/palantir.db"
+export PALANTIR_ENROLLMENT_PATH="$DATA_DIR/enrollments"
+export PALANTIR_AUTH_TOKEN="$AUTH_TOKEN"
 
 echo "[4/5] Dev config:"
-echo "  DB:         $PALINTIR_DB_PATH"
+echo "  DB:         $PALANTIR_DB_PATH"
 echo "  Redis:      in-process fakeredis"
 echo "  Auth token: $AUTH_TOKEN"
 
@@ -75,7 +75,7 @@ echo "  Ctrl-C to stop."
 echo ""
 
 exec "$VENV/bin/uvicorn" \
-    palintir.web.main:create_app \
+    palantir.web.main:create_app \
     --factory \
     --host 127.0.0.1 \
     --port 8080 \

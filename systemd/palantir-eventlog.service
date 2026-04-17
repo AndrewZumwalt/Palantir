@@ -1,0 +1,25 @@
+[Unit]
+Description=Palantir Event Log Service
+After=redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=palantir
+Group=palantir
+WorkingDirectory=/opt/palantir
+Environment=PALANTIR_ENV=production
+EnvironmentFile=/opt/palantir/.env
+ExecStart=/opt/palantir/.venv/bin/palantir-eventlog
+Restart=always
+RestartSec=5
+Nice=10
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/palantir
+
+[Install]
+WantedBy=multi-user.target

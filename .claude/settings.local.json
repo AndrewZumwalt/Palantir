@@ -82,7 +82,22 @@
       "Bash(xargs kill:*)",
       "Bash(npm --prefix frontend install --save-dev @tailwindcss/vite)",
       "Bash(git reset:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(../.tools/node/bin/npm run *)",
+      "Bash(lsof -i:8080)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" -H \"Authorization: Bearer devtoken\" http://127.0.0.1:8080/api/dashboard/attendance)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" -H \"Authorization: Bearer devtoken\" http://127.0.0.1:8080/api/settings/privacy)",
+      "Bash(sudo -n chown -R andrew.zumwalt26:staff /Users/andrew.zumwalt26/Palintir/frontend/dist)",
+      "Bash(git mv *)",
+      "Bash(find .venv -name '*.pth' -exec grep -l palintir {} \\\\;)",
+      "Bash(rm -f .venv/lib/python*/site-packages/_editable_impl_palintir.pth)",
+      "Bash(rm -rf .venv/lib/python*/site-packages/palintir-0.1.0.dist-info)",
+      "Bash(.venv/bin/python -c \"import palantir; from palantir.config import load_config; print\\('ok:', palantir.__file__\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'ws_clients={d[\\\\\"ws_clients\\\\\"]}'\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'ws_clients={d[\\\\\"ws_clients\\\\\"]}, uptime={d[\\\\\"uptime_seconds\\\\\"]:.0f}s'\\)\")",
+      "Bash(lsof -iTCP:8080 -sTCP:ESTABLISHED)"
     ]
   }
 }

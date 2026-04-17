@@ -1,0 +1,19 @@
+[Unit]
+Description=Palantir Database Backup
+After=palantir-eventlog.service
+# Oneshot — runs, backs up, exits. Triggered by palantir-backup.timer.
+
+[Service]
+Type=oneshot
+User=palantir
+Group=palantir
+WorkingDirectory=/opt/palantir
+Environment=PALANTIR_ENV=production
+EnvironmentFile=/opt/palantir/.env
+ExecStart=/opt/palantir/.venv/bin/palantir-backup
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/palantir
