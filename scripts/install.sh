@@ -1,13 +1,30 @@
 #!/usr/bin/env bash
 # Palintir - Raspberry Pi Installation Script
 # Run as root on a fresh Raspberry Pi OS (Bookworm)
+#
+# Flags:
+#   --skip-apt        Skip apt-get entirely (use when mirror is blocked;
+#                     Pi OS Bookworm ships python3/venv; add redis manually later)
+#   --use-fakeredis   Wire PALINTIR_REDIS_FAKE=1 in .env so the web service
+#                     runs without redis-server (same as Mac dev mode)
 set -euo pipefail
 
 INSTALL_DIR="/opt/palintir"
 DATA_DIR="/var/lib/palintir"
 SERVICE_USER="palintir"
+SKIP_APT=0
+USE_FAKEREDIS=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --skip-apt)       SKIP_APT=1 ;;
+        --use-fakeredis)  USE_FAKEREDIS=1 ;;
+    esac
+done
 
 echo "=== Palintir Installation ==="
+[ "$SKIP_APT" = "1" ]       && echo "  (--skip-apt: skipping system package install)"
+[ "$USE_FAKEREDIS" = "1" ]  && echo "  (--use-fakeredis: using in-process Redis shim)"
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -16,18 +33,26 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 1. Install system dependencies
-echo "[1/9] Installing system packages..."
-apt-get update -qq
-apt-get install -y -qq \
-    python3 python3-pip python3-venv \
-    redis-server \
-    libopencv-dev python3-opencv \
-    portaudio19-dev \
-    libopenblas-dev \
-    libhdf5-dev \
-    libssl-dev \
-    ufw \
-    git
+if [ "$SKIP_APT" = "0" ]; then
+    echo "[1/9] Installing system packages..."
+    apt-get update -qq
+    apt-get install -y -qq \
+        python3 python3-pip python3-venv \
+        redis-server \
+        libopencv-dev python3-opencv \
+        portaudio19-dev \
+        libopenblas-dev \
+        libhdf5-dev \
+        libssl-dev \
+        ufw \
+        git
+else
+    echo "[1/9] Skipping apt-get (--skip-apt).  Ensure python3-venv is available."
+    python3 -m venv --version > /dev/null 2>&1 || {
+        echo "Error: python3-venv not found. Run with hotspot or --use-fakeredis only."
+        exit 1
+    }
+fi
 
 # 2. Create service user
 echo "[2/9] Creating service user..."
@@ -72,6 +97,10 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     cp "$INSTALL_DIR/config/.env.example" "$INSTALL_DIR/.env"
     sed -i "s|PALINTIR_AUTH_TOKEN=|PALINTIR_AUTH_TOKEN=$AUTH_TOKEN|" "$INSTALL_DIR/.env"
     echo "PALINTIR_ENV=production" >> "$INSTALL_DIR/.env"
+    if [ "$USE_FAKEREDIS" = "1" ]; then
+        echo "PALINTIR_REDIS_FAKE=1" >> "$INSTALL_DIR/.env"
+        echo "  (fakeredis: in-process Redis, no redis-server needed)"
+    fi
     chmod 600 "$INSTALL_DIR/.env"
     chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/.env"
     echo "  Auth token: $AUTH_TOKEN"
