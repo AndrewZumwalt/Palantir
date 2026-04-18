@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import structlog
 
 
@@ -22,7 +24,7 @@ def setup_logging(service_name: str, *, debug: bool = False) -> None:
             ),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(
-            structlog.logging.DEBUG if debug else structlog.logging.INFO
+            logging.DEBUG if debug else logging.INFO
         ),
         context_class=dict,
         logger_factory=structlog.PrintLoggerFactory(),
