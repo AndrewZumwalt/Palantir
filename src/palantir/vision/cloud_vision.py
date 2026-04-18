@@ -1,13 +1,22 @@
-"""Claude Vision API client for complex scene understanding.
+"""Cloud vision client for complex scene understanding.
 
-Used on-demand when a user asks a question that requires deeper
-visual analysis than YOLO can provide (e.g., "where is the drill?",
-"what's written on the whiteboard?", "what am I wearing?").
+Used on-demand when a user asks a question that requires deeper visual
+analysis than YOLO can provide (e.g., "where is the drill?", "what's
+written on the whiteboard?", "what am I wearing?").
+
+Supports two providers — mirroring ``LLMClient``:
+
+  - **Anthropic Claude Vision** (preferred) via the `anthropic` SDK.
+  - **Groq** (fallback) via the `groq` SDK with a Llama vision model.
+
+Whichever API key is set first (Anthropic wins on a tie) is used. The
+public ``analyze_frame`` surface is provider-agnostic.
 """
 
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 import cv2
 import numpy as np
@@ -24,29 +33,81 @@ try:
 except ImportError:
     _ANTHROPIC_AVAILABLE = False
 
+try:
+    import groq
+
+    _GROQ_AVAILABLE = True
+except ImportError:
+    _GROQ_AVAILABLE = False
+
 
 class CloudVision:
-    """Sends camera frames to Claude Vision for analysis."""
+    """Sends camera frames to a vision-capable LLM for analysis."""
 
-    def __init__(self, api_key: str, model: str = "claude-haiku-4-5-20250301"):
-        self._client: anthropic.Anthropic | None = None
-        self._model = model
+    def __init__(
+        self,
+        anthropic_api_key: str = "",
+        groq_api_key: str = "",
+        anthropic_model: str = "claude-haiku-4-5-20251001",
+        groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct",
+        # Back-compat: older callers passed `api_key` + `model` (Anthropic).
+        api_key: str | None = None,
+        model: str | None = None,
+    ):
+        self._client: Any = None
+        self._provider: str = "none"
+        self._model: str = ""
         self._breaker = CircuitBreaker(
             failure_threshold=3,
             recovery_timeout=60.0,
-            name="claude_vision",
+            name="cloud_vision",
         )
 
-        if not _ANTHROPIC_AVAILABLE:
-            logger.warning("anthropic_not_installed")
-            return
+        # Back-compat shim
+        if api_key and not anthropic_api_key:
+            anthropic_api_key = api_key
+        if model and anthropic_model == "claude-haiku-4-5-20251001":
+            anthropic_model = model
 
-        if not api_key:
-            logger.warning("anthropic_api_key_missing")
-            return
+        if anthropic_api_key:
+            if not _ANTHROPIC_AVAILABLE:
+                logger.warning("anthropic_not_installed")
+            else:
+                self._client = anthropic.Anthropic(
+                    api_key=anthropic_api_key, timeout=15.0
+                )
+                self._provider = "anthropic"
+                self._model = anthropic_model
+                logger.info(
+                    "cloud_vision_initialized",
+                    provider="anthropic",
+                    model=anthropic_model,
+                )
+                return
 
-        self._client = anthropic.Anthropic(api_key=api_key, timeout=15.0)
-        logger.info("cloud_vision_initialized", model=model)
+        if groq_api_key:
+            if not _GROQ_AVAILABLE:
+                logger.warning("groq_not_installed")
+            else:
+                self._client = groq.Groq(api_key=groq_api_key, timeout=15.0)
+                self._provider = "groq"
+                self._model = groq_model
+                logger.info(
+                    "cloud_vision_initialized",
+                    provider="groq",
+                    model=groq_model,
+                )
+                return
+
+        logger.warning("cloud_vision_api_key_missing")
+
+    @property
+    def provider(self) -> str:
+        return self._provider
+
+    @property
+    def is_available(self) -> bool:
+        return self._client is not None
 
     def analyze_frame(
         self,
@@ -54,7 +115,7 @@ class CloudVision:
         question: str,
         context: str = "",
     ) -> str | None:
-        """Send a camera frame to Claude Vision with a question.
+        """Send a camera frame to the vision API with a question.
 
         Args:
             frame: BGR image from OpenCV.
@@ -62,7 +123,7 @@ class CloudVision:
             context: Additional context (who's asking, etc.).
 
         Returns:
-            Claude's analysis of the scene, or None on failure.
+            The model's analysis of the scene, or None on failure.
         """
         if not self._client:
             return None
@@ -88,44 +149,67 @@ class CloudVision:
             system += f"\n\nAdditional context:\n{context}"
 
         try:
-            response = self._client.messages.create(
-                model=self._model,
-                max_tokens=300,
-                system=system,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": image_b64,
+            if self._provider == "anthropic":
+                response = self._client.messages.create(
+                    model=self._model,
+                    max_tokens=300,
+                    system=system,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": image_b64,
+                                    },
                                 },
-                            },
-                            {
-                                "type": "text",
-                                "text": question,
-                            },
-                        ],
-                    }
-                ],
-            )
+                                {"type": "text", "text": question},
+                            ],
+                        }
+                    ],
+                )
+                text = response.content[0].text
+                input_tokens = response.usage.input_tokens
+                output_tokens = response.usage.output_tokens
+            else:  # groq — OpenAI-style chat completions with image_url part
+                data_url = f"data:image/jpeg;base64,{image_b64}"
+                response = self._client.chat.completions.create(
+                    model=self._model,
+                    max_tokens=300,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": data_url},
+                                },
+                                {"type": "text", "text": question},
+                            ],
+                        },
+                    ],
+                )
+                text = response.choices[0].message.content or ""
+                input_tokens = response.usage.prompt_tokens
+                output_tokens = response.usage.completion_tokens
 
-            text = response.content[0].text
             self._breaker.record_success()
             logger.info(
                 "cloud_vision_response",
-                tokens_in=response.usage.input_tokens,
-                tokens_out=response.usage.output_tokens,
+                provider=self._provider,
+                tokens_in=input_tokens,
+                tokens_out=output_tokens,
                 preview=text[:80],
             )
             return text
 
         except Exception:
             self._breaker.record_failure()
-            logger.exception("cloud_vision_error")
+            logger.exception("cloud_vision_error", provider=self._provider)
             return None
 
     def describe_scene(self, frame: np.ndarray) -> str | None:
@@ -143,7 +227,3 @@ class CloudVision:
             f"Can you see a {object_name} in this image? "
             f"If yes, describe exactly where it is. If no, say you don't see it.",
         )
-
-    @property
-    def is_available(self) -> bool:
-        return self._client is not None

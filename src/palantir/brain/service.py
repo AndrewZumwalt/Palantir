@@ -85,10 +85,12 @@ class BrainService:
         privacy = await self._redis.get(Keys.PRIVACY_MODE)
         self._privacy_mode = privacy == "1"
 
-        # Initialize components
+        # Initialize components. LLMClient picks its provider based on which
+        # key is set; Anthropic wins when both are present.
         self._llm = LLMClient(
-            api_key=self._config.anthropic_api_key,
             config=self._config.llm,
+            anthropic_api_key=self._config.anthropic_api_key,
+            groq_api_key=self._config.groq_api_key,
         )
         self._context_builder = ContextBuilder(self._redis, self._db)
         self._conversation = ConversationManager(self._db)
@@ -97,11 +99,16 @@ class BrainService:
             staleness_timeout=self._config.identity.identity_staleness_seconds,
         )
 
-        # Initialize cloud vision for object/scene queries
-        if _CLOUD_VISION_AVAILABLE and self._config.anthropic_api_key:
+        # Initialize cloud vision for object/scene queries (accepts either key)
+        has_any_llm_key = bool(
+            self._config.anthropic_api_key or self._config.groq_api_key
+        )
+        if _CLOUD_VISION_AVAILABLE and has_any_llm_key:
             self._cloud_vision = CloudVision(
-                api_key=self._config.anthropic_api_key,
-                model=self._config.llm.default_model,
+                anthropic_api_key=self._config.anthropic_api_key,
+                groq_api_key=self._config.groq_api_key,
+                anthropic_model=self._config.llm.default_model,
+                groq_model=self._config.llm.groq_vision_model,
             )
 
         # Start network monitor for offline detection
@@ -422,6 +429,7 @@ class BrainService:
             details={
                 "privacy_mode": self._privacy_mode,
                 "llm_available": self._llm.is_available if self._llm else False,
+                "llm_provider": self._llm.provider if self._llm else "none",
                 "llm_circuit": self._llm.breaker_state if self._llm else "n/a",
                 "online": self._network_monitor.online if self._network_monitor else True,
                 "automation_rules": self._automation.rule_count if self._automation else 0,

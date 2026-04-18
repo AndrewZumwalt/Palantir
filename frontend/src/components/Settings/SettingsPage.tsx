@@ -8,6 +8,7 @@ import {
   Play,
   Trash2,
   Workflow,
+  Zap,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
@@ -21,6 +22,8 @@ interface ConfigData {
   auto_delete_on_unenroll: boolean;
   auth_configured: boolean;
   anthropic_configured: boolean;
+  groq_configured: boolean;
+  llm_provider: "anthropic" | "groq" | "none";
   automation_enabled: boolean;
   allow_shell_commands: boolean;
   camera: { width: number; height: number; fps: number };
@@ -52,29 +55,51 @@ function IntegrationRow({
   label,
   description,
   icon: Icon,
+  active,
+  pillOverride,
 }: {
   ok: boolean;
   label: string;
   description: string;
   icon: React.ComponentType<{ className?: string }>;
+  /** When true, the row is highlighted as the currently-selected provider. */
+  active?: boolean;
+  /** Override the default "OK / ATTENTION" pill (used for LLM provider rows). */
+  pillOverride?: { tone: "green" | "amber" | "cyan" | "gray" | "red"; label: string };
 }) {
+  const highlight = active
+    ? "border-cyan-700/60 bg-cyan-500/10"
+    : ok
+      ? "border-emerald-700/50 bg-emerald-500/5"
+      : "border-amber-700/50 bg-amber-500/5";
+  const iconColor = active
+    ? "text-cyan-300"
+    : ok
+      ? "text-emerald-400"
+      : "text-amber-400";
   return (
     <div className="flex items-center gap-3 py-2 border-b border-[#141d35] last:border-0">
       <div
         className={[
           "w-9 h-9 border flex items-center justify-center shrink-0",
-          ok ? "border-emerald-700/50 bg-emerald-500/5" : "border-amber-700/50 bg-amber-500/5",
+          highlight,
         ].join(" ")}
       >
-        <Icon className={ok ? "w-4 h-4 text-emerald-400" : "w-4 h-4 text-amber-400"} />
+        <Icon className={`w-4 h-4 ${iconColor}`} />
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-sm text-gray-100">{label}</div>
         <div className="text-xs text-gray-500">{description}</div>
       </div>
-      <StatusPill tone={ok ? "green" : "amber"} size="xs">
-        {ok ? "OK" : "ATTENTION"}
-      </StatusPill>
+      {pillOverride ? (
+        <StatusPill tone={pillOverride.tone} size="xs" pulse={active}>
+          {pillOverride.label}
+        </StatusPill>
+      ) : (
+        <StatusPill tone={ok ? "green" : "amber"} size="xs">
+          {ok ? "OK" : "ATTENTION"}
+        </StatusPill>
+      )}
     </div>
   );
 }
@@ -274,12 +299,42 @@ export default function SettingsPage() {
         <div className="space-y-0">
           <IntegrationRow
             ok={!!config?.anthropic_configured}
+            active={config?.llm_provider === "anthropic"}
             icon={Brain}
             label="Anthropic API"
             description={
               config?.anthropic_configured
-                ? "Cognitive backend responding"
+                ? config?.llm_provider === "anthropic"
+                  ? "Cognitive backend — live"
+                  : "Configured but not selected"
                 : "ANTHROPIC_API_KEY is not set"
+            }
+            pillOverride={
+              config?.llm_provider === "anthropic"
+                ? { tone: "cyan", label: "ACTIVE" }
+                : config?.anthropic_configured
+                  ? { tone: "gray", label: "STANDBY" }
+                  : undefined
+            }
+          />
+          <IntegrationRow
+            ok={!!config?.groq_configured}
+            active={config?.llm_provider === "groq"}
+            icon={Zap}
+            label="Groq API"
+            description={
+              config?.groq_configured
+                ? config?.llm_provider === "groq"
+                  ? "Cognitive backend — live (free-tier fallback)"
+                  : "Configured (Anthropic takes priority)"
+                : "GROQ_API_KEY is not set — free alternative to Anthropic"
+            }
+            pillOverride={
+              config?.llm_provider === "groq"
+                ? { tone: "cyan", label: "ACTIVE" }
+                : config?.groq_configured
+                  ? { tone: "gray", label: "STANDBY" }
+                  : undefined
             }
           />
           <IntegrationRow
@@ -303,6 +358,19 @@ export default function SettingsPage() {
             }
           />
         </div>
+        {config?.llm_provider === "none" && (
+          <div className="mt-4 flex items-start gap-2 px-3 py-2 bg-amber-500/10 border border-amber-600/60 font-data text-[11px] text-amber-200">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />
+            <span>
+              No cognitive backend configured. Set{" "}
+              <strong>ANTHROPIC_API_KEY</strong> or{" "}
+              <strong>GROQ_API_KEY</strong> (free tier available) in{" "}
+              <span className="font-data text-amber-300">.env</span> to enable
+              LLM responses. The assistant will otherwise reply using a
+              deterministic offline responder.
+            </span>
+          </div>
+        )}
         {config?.allow_shell_commands && (
           <div className="mt-4 flex items-start gap-2 px-3 py-2 bg-amber-500/10 border border-amber-600/60 font-data text-[11px] text-amber-200">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />

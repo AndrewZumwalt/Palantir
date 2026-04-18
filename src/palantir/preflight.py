@@ -49,10 +49,15 @@ def _check_common(config: PalantirConfig, result: PreflightResult) -> None:
 
 
 def _check_llm_access(config: PalantirConfig, result: PreflightResult) -> None:
-    """Services that call Claude should warn loudly if the API key is missing."""
-    if not config.anthropic_api_key:
+    """Services that call an LLM should warn if no provider key is set.
+
+    Either ANTHROPIC_API_KEY or GROQ_API_KEY is accepted; Anthropic is
+    preferred but Groq offers a free tier useful for development.
+    """
+    if not config.anthropic_api_key and not config.groq_api_key:
         result.warn(
-            "ANTHROPIC_API_KEY is not set; service will run in offline mode only"
+            "No LLM API key set (ANTHROPIC_API_KEY or GROQ_API_KEY); "
+            "service will run in offline mode only"
         )
 
 

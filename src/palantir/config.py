@@ -79,6 +79,12 @@ class LLMConfig:
     max_context_tokens: int = 4096
     enable_prompt_caching: bool = True
     temperature: float = 0.7
+    # Groq fallback models (used when GROQ_API_KEY is set but ANTHROPIC_API_KEY
+    # is not). Groq's free tier is generous and OpenAI-compatible, so it makes
+    # a convenient no-cost alternative for development and testing.
+    groq_default_model: str = "llama-3.1-8b-instant"
+    groq_complex_model: str = "llama-3.3-70b-versatile"
+    groq_vision_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 
 @dataclass
@@ -155,6 +161,7 @@ class PalantirConfig:
 
     # Non-TOML config loaded from environment
     anthropic_api_key: str = ""
+    groq_api_key: str = ""
     auth_token: str = ""
     db_path: str = "/var/lib/palantir/palantir.db"
     enrollment_path: str = "/var/lib/palantir/enrollments"
@@ -219,6 +226,7 @@ def load_config(environment: str | None = None) -> PalantirConfig:
 
     # Load from environment variables
     config.anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    config.groq_api_key = os.environ.get("GROQ_API_KEY", "")
     config.auth_token = os.environ.get("PALANTIR_AUTH_TOKEN", "")
     config.db_path = os.environ.get("PALANTIR_DB_PATH", config.db_path)
     config.enrollment_path = os.environ.get("PALANTIR_ENROLLMENT_PATH", config.enrollment_path)

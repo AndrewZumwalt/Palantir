@@ -30,6 +30,9 @@ dependencies = [
 # Phase 2: Voice pipeline
 voice = [
     "anthropic>=0.42.0",
+    # Optional free-tier alternative LLM provider (OpenAI-compatible).
+    # LLMClient auto-selects Anthropic if ANTHROPIC_API_KEY is set, else Groq.
+    "groq>=0.11.0",
     "faster-whisper>=1.1.0",
     "openwakeword>=0.6.0",
     "piper-tts>=1.2.0",

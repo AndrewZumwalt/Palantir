@@ -35,11 +35,21 @@ async def get_public_config():
     from palantir.config import load_config
 
     cfg = load_config()
+    # LLM provider reporting: either Anthropic or Groq counts as "configured"
+    # for the cognitive backend; the UI shows both rows so operators can see
+    # which one is live.
+    llm_provider = (
+        "anthropic"
+        if cfg.anthropic_api_key
+        else ("groq" if cfg.groq_api_key else "none")
+    )
     return {
         "retention_days": cfg.privacy.data_retention_days,
         "auto_delete_on_unenroll": cfg.privacy.auto_delete_on_unenroll,
         "auth_configured": bool(cfg.auth_token),
         "anthropic_configured": bool(cfg.anthropic_api_key),
+        "groq_configured": bool(cfg.groq_api_key),
+        "llm_provider": llm_provider,
         "automation_enabled": cfg.automation.enabled,
         "allow_shell_commands": cfg.automation.allow_shell_commands,
         "camera": {
