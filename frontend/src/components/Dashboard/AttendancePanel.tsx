@@ -1,5 +1,9 @@
+import { Clock, DoorOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { EmptyState, LoadingLines } from "../ui/EmptyState";
+import { Panel } from "../ui/Panel";
+import { StatusPill } from "../ui/StatusPill";
 
 interface AttendanceRecord {
   person_id: string;
@@ -15,40 +19,59 @@ interface SessionData {
   records: AttendanceRecord[];
 }
 
+function formatTime(iso: string) {
+  return new Date(iso).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatDuration(seconds: number | null) {
+  if (seconds === null) return "PRESENT";
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
 export default function AttendancePanel() {
   const [data, setData] = useState<SessionData | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     const load = async () => {
-      const result = await api.get<SessionData>("/attendance/current");
-      setData(result);
+      try {
+        const result = await api.get<SessionData>("/attendance/current");
+        setData(result);
+      } catch {
+        /* ignore */
+      } finally {
+        setLoaded(true);
+      }
     };
     load();
-    const interval = setInterval(load, 15000); // Refresh every 15s
+    const interval = setInterval(load, 15000);
     return () => clearInterval(interval);
   }, []);
 
-  const formatTime = (iso: string) => {
-    return new Date(iso).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
-
-  const formatDuration = (seconds: number | null) => {
-    if (seconds === null) return "Present";
-    const m = Math.floor(seconds / 60);
-    if (m < 60) return `${m}m`;
-    const h = Math.floor(m / 60);
-    return `${h}h ${m % 60}m`;
-  };
+  if (!loaded) {
+    return (
+      <Panel label="SESSION" title="Attendance log">
+        <LoadingLines rows={3} />
+      </Panel>
+    );
+  }
 
   if (!data?.session) {
     return (
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="text-lg font-semibold mb-2">Attendance</h2>
-        <p className="text-gray-400 text-sm">No active session</p>
-      </div>
+      <Panel label="SESSION" title="Attendance log">
+        <EmptyState
+          icon={<DoorOpen className="w-5 h-5" />}
+          title="NO ACTIVE SESSION"
+          description="Start a session from the Directives panel to begin recording."
+        />
+      </Panel>
     );
   }
 
@@ -56,66 +79,64 @@ export default function AttendancePanel() {
   const departed = data.records.filter((r) => r.exited_at);
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold">Attendance</h2>
-          <p className="text-xs text-gray-500">
-            {data.session.name} - Started{" "}
-            {formatTime(data.session.started_at)}
-          </p>
-        </div>
-        <span className="text-sm font-medium text-indigo-600">
-          {present.length} present
-        </span>
-      </div>
-
-      <div className="divide-y divide-gray-50">
+    <Panel
+      label="SESSION"
+      title={data.session.name}
+      meta={
+        <>
+          <Clock className="w-3 h-3 opacity-60" />
+          <span>{formatTime(data.session.started_at)}</span>
+        </>
+      }
+    >
+      <div className="space-y-1">
         {present.map((r) => (
           <div
             key={r.person_id}
-            className="px-5 py-3 flex items-center justify-between"
+            className="flex items-center justify-between gap-3 py-1.5"
           >
-            <div className="flex items-center gap-3">
-              <div className="w-2 h-2 rounded-full bg-green-500" />
-              <span className="font-medium text-sm">{r.name}</span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 pulse-dot shrink-0" />
+              <span className="text-sm text-gray-200 truncate">{r.name}</span>
             </div>
-            <span className="text-xs text-gray-500">
-              Arrived {formatTime(r.entered_at)}
+            <span className="font-data text-[10px] text-gray-500 shrink-0 uppercase tracking-[0.12em]">
+              IN @ {formatTime(r.entered_at)}
             </span>
           </div>
         ))}
 
         {departed.length > 0 && (
           <>
-            <div className="px-5 py-2 bg-gray-50">
-              <span className="text-xs font-medium text-gray-400 uppercase">
-                Left
-              </span>
-            </div>
-            {departed.map((r) => (
-              <div
-                key={r.person_id + r.entered_at}
-                className="px-5 py-3 flex items-center justify-between opacity-60"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-2 h-2 rounded-full bg-gray-300" />
-                  <span className="font-medium text-sm">{r.name}</span>
-                </div>
-                <span className="text-xs text-gray-500">
-                  {formatDuration(r.duration_seconds)}
-                </span>
+            <div className="pt-3 mt-2 border-t border-[#141d35]">
+              <div className="font-data text-[10px] uppercase tracking-[0.2em] text-gray-600 mb-2">
+                // DEPARTED
               </div>
-            ))}
+              {departed.map((r) => (
+                <div
+                  key={r.person_id + r.entered_at}
+                  className="flex items-center justify-between gap-3 py-1.5 opacity-50"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-gray-600 shrink-0" />
+                    <span className="text-sm text-gray-400 truncate">
+                      {r.name}
+                    </span>
+                  </div>
+                  <StatusPill tone="gray" size="xs">
+                    {formatDuration(r.duration_seconds)}
+                  </StatusPill>
+                </div>
+              ))}
+            </div>
           </>
         )}
 
         {data.records.length === 0 && (
-          <div className="px-5 py-8 text-center text-gray-400 text-sm">
-            No one detected yet
+          <div className="py-8 text-center font-data text-xs text-gray-500">
+            &gt; AWAITING FIRST DETECTION
           </div>
         )}
       </div>
-    </div>
+    </Panel>
   );
 }

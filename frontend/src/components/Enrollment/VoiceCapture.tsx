@@ -1,5 +1,9 @@
+import { Mic, MicOff, SkipForward, Square } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { api } from "../../api/client";
+import { Button } from "../ui/Button";
+import { Panel } from "../ui/Panel";
+import { StatusPill } from "../ui/StatusPill";
 
 interface VoiceEnrollmentStatus {
   person_id: string;
@@ -28,14 +32,15 @@ export default function VoiceCapture({
   const chunksRef = useRef<Blob[]>([]);
 
   const prompts = [
-    "Please say: 'Hello Palantir, my name is " + personName + "'",
-    "Please say: 'The quick brown fox jumps over the lazy dog'",
-    "Please say: 'Today is a great day to learn something new'",
-    "Please say: 'Can you tell me what time the class ends?'",
-    "Please say any sentence naturally for a few seconds",
+    `"Hello Palantir, my name is ${personName}."`,
+    `"The quick brown fox jumps over the lazy dog."`,
+    `"Today is a great day to learn something new."`,
+    `"Can you tell me what time the class ends?"`,
+    `"Any short sentence — speak naturally for a few seconds."`,
   ];
 
-  const currentPrompt = prompts[Math.min(status?.voice_samples ?? 0, prompts.length - 1)];
+  const promptIdx = Math.min(status?.voice_samples ?? 0, prompts.length - 1);
+  const currentPrompt = prompts[promptIdx];
 
   const startRecording = useCallback(async () => {
     try {
@@ -56,8 +61,6 @@ export default function VoiceCapture({
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-
-        // Convert to PCM int16 via AudioContext
         setProcessing(true);
         try {
           const arrayBuffer = await blob.arrayBuffer();
@@ -65,14 +68,12 @@ export default function VoiceCapture({
           const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
           const pcmFloat = audioBuffer.getChannelData(0);
 
-          // Convert float32 to int16
           const pcmInt16 = new Int16Array(pcmFloat.length);
           for (let i = 0; i < pcmFloat.length; i++) {
             const s = Math.max(-1, Math.min(1, pcmFloat[i]));
             pcmInt16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
           }
 
-          // Base64 encode
           const bytes = new Uint8Array(pcmInt16.buffer);
           let binary = "";
           for (let i = 0; i < bytes.length; i++) {
@@ -82,13 +83,10 @@ export default function VoiceCapture({
 
           const result = await api.post<VoiceEnrollmentStatus>(
             `/enrollment/persons/${personId}/voice`,
-            { audio_base64: base64, sample_rate: 16000 },
+            { audio_base64: base64, sample_rate: 16000 }
           );
           setStatus(result);
-
-          if (result.complete) {
-            onComplete();
-          }
+          if (result.complete) onComplete();
 
           await audioCtx.close();
         } catch (err: unknown) {
@@ -102,8 +100,6 @@ export default function VoiceCapture({
 
       mediaRecorder.start();
       setRecording(true);
-
-      // Auto-stop after 5 seconds
       setTimeout(() => {
         if (mediaRecorder.state === "recording") {
           mediaRecorder.stop();
@@ -124,66 +120,95 @@ export default function VoiceCapture({
 
   const samples = status?.voice_samples ?? 0;
   const required = status?.required_samples ?? 5;
+  const pct = Math.min(100, (samples / required) * 100);
 
   return (
-    <div className="max-w-md mx-auto">
-      <h2 className="text-xl font-bold mb-2">
-        Voice Enrollment - {personName}
-      </h2>
-      <p className="text-gray-500 text-sm mb-4">
-        {samples}/{required} voice samples captured.
-      </p>
+    <Panel label="CAPTURE" title="Voice enrollment" tone="amber" brackets>
+      <div className="flex items-center justify-between mb-3">
+        <span className="font-data text-[11px] text-gray-400 uppercase tracking-[0.18em]">
+          &gt; {samples.toString().padStart(2, "0")} / {required} samples
+        </span>
+        {recording ? (
+          <StatusPill tone="red" size="xs" pulse>
+            RECORDING
+          </StatusPill>
+        ) : processing ? (
+          <StatusPill tone="cyan" size="xs" pulse>
+            PROCESSING
+          </StatusPill>
+        ) : (
+          <StatusPill tone="gray" size="xs">
+            READY
+          </StatusPill>
+        )}
+      </div>
 
-      {/* Progress */}
-      <div className="w-full bg-gray-200 rounded-full h-2 mb-6">
+      <div className="h-1.5 bg-[#05080f] border border-[#1c2540] mb-5">
         <div
-          className="bg-indigo-600 h-2 rounded-full transition-all"
-          style={{ width: `${(samples / required) * 100}%` }}
+          className="h-full bg-amber-500 transition-all"
+          style={{ width: `${pct}%` }}
         />
       </div>
 
       {/* Prompt */}
-      <div className="bg-indigo-50 rounded-lg p-4 mb-6 text-center">
-        <p className="text-indigo-800 font-medium">{currentPrompt}</p>
+      <div className="bg-[#05080f] border border-amber-600/30 px-4 py-5 text-center mb-5">
+        <div className="font-data text-[10px] uppercase tracking-[0.22em] text-amber-500 mb-2">
+          // PROMPT {promptIdx + 1}
+        </div>
+        <p className="text-gray-100 text-base leading-relaxed">
+          {currentPrompt}
+        </p>
       </div>
 
-      {/* Recording indicator */}
-      {recording && (
-        <div className="flex items-center justify-center gap-2 mb-4">
-          <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse" />
-          <span className="text-sm text-red-600 font-medium">
-            Recording...
-          </span>
-        </div>
-      )}
+      {/* Waveform placeholder — animated bars */}
+      <div className="flex items-end justify-center gap-1 h-12 mb-5">
+        {Array.from({ length: 28 }).map((_, i) => (
+          <span
+            key={i}
+            className={[
+              "w-1 bg-amber-500/60",
+              recording ? "breathe" : "",
+            ].join(" ")}
+            style={{
+              height: recording
+                ? `${20 + ((i * 37 + Date.now()) % 80)}%`
+                : "20%",
+              animationDelay: `${(i % 8) * 0.08}s`,
+            }}
+          />
+        ))}
+      </div>
 
-      {/* Actions */}
-      <div className="flex gap-3">
-        <button
+      <div className="flex gap-2 justify-end">
+        <Button
+          variant="ghost"
           onClick={onSkip}
-          className="px-4 py-2 border border-gray-300 rounded-lg text-sm"
+          iconLeft={<SkipForward className="w-4 h-4" />}
         >
-          Skip Voice
-        </button>
+          SKIP VOICE
+        </Button>
         {recording ? (
-          <button
+          <Button
+            variant="danger"
             onClick={stopRecording}
-            className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700"
+            iconLeft={<Square className="w-4 h-4 fill-current" />}
           >
-            Stop Recording
-          </button>
+            STOP
+          </Button>
         ) : (
-          <button
+          <Button
+            variant="primary"
             onClick={startRecording}
             disabled={processing}
-            className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
+            loading={processing}
+            iconLeft={
+              processing ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />
+            }
           >
-            {processing
-              ? "Processing..."
-              : `Record Sample (${samples}/${required})`}
-          </button>
+            {processing ? "PROCESSING" : "RECORD 5s"}
+          </Button>
         )}
       </div>
-    </div>
+    </Panel>
   );
 }

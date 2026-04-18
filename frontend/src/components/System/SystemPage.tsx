@@ -1,5 +1,19 @@
+import {
+  Activity,
+  Brain,
+  Camera,
+  Database,
+  Globe,
+  Mic,
+  Volume2,
+} from "lucide-react";
+import type { ComponentType } from "react";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { LoadingLines } from "../ui/EmptyState";
+import { MetricKPI } from "../ui/MetricKPI";
+import { Panel, SectionHeader } from "../ui/Panel";
+import { StatusPill } from "../ui/StatusPill";
 
 interface ServiceStatus {
   name: string;
@@ -24,17 +38,47 @@ interface SystemStats {
   conversations: number;
 }
 
-const SERVICE_DESCRIPTIONS: Record<string, string> = {
-  audio: "Microphone capture, wake word, speech-to-text, speaker ID",
-  vision: "Camera capture, face detection, object detection, engagement",
-  brain: "LLM reasoning, context building, automation engine",
-  tts: "Text-to-speech synthesis and playback",
-  eventlog: "Event persistence, attendance tracking, score aggregation",
-  web: "HTTP API, WebSocket bridge, frontend serving",
+interface ServiceMeta {
+  icon: ComponentType<{ className?: string }>;
+  description: string;
+  label: string;
+}
+
+const SERVICE_META: Record<string, ServiceMeta> = {
+  audio: {
+    icon: Mic,
+    description: "Microphone, wake-word, STT, speaker identification",
+    label: "AUD-01",
+  },
+  vision: {
+    icon: Camera,
+    description: "Camera, face detection, object detection, engagement",
+    label: "VIS-02",
+  },
+  brain: {
+    icon: Brain,
+    description: "LLM reasoning, context builder, automation engine",
+    label: "BRN-03",
+  },
+  tts: {
+    icon: Volume2,
+    description: "Text-to-speech synthesis and playback",
+    label: "TTS-04",
+  },
+  eventlog: {
+    icon: Database,
+    description: "Event persistence, attendance, score aggregation",
+    label: "LOG-05",
+  },
+  web: {
+    icon: Globe,
+    description: "HTTP API, WebSocket bridge, frontend serving",
+    label: "WEB-06",
+  },
 };
 
 function formatUptime(seconds?: number): string {
-  if (seconds === undefined || seconds === null) return "—";
+  if (seconds === undefined || seconds === null) return "--";
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
@@ -44,66 +88,72 @@ function formatUptime(seconds?: number): string {
 }
 
 function ServiceCard({ service }: { service: ServiceStatus }) {
-  const statusColor = service.stale
-    ? "bg-gray-200"
-    : service.healthy
-      ? "bg-emerald-500"
-      : "bg-red-500";
+  const meta = SERVICE_META[service.name] ?? {
+    icon: Activity,
+    description: "",
+    label: service.name.toUpperCase(),
+  };
+  const Icon = meta.icon;
+
+  const tone = service.stale ? "gray" : service.healthy ? "green" : "red";
   const statusLabel = service.stale
-    ? "No heartbeat"
+    ? "NO HEARTBEAT"
     : service.healthy
-      ? "Healthy"
-      : "Degraded";
+      ? "HEALTHY"
+      : "DEGRADED";
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-3">
-          <span className={`w-2.5 h-2.5 rounded-full ${statusColor}`} />
-          <h3 className="text-base font-semibold capitalize">
-            palantir-{service.name}
-          </h3>
-        </div>
-        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+    <Panel
+      label={meta.label}
+      title={`palantir-${service.name}`}
+      meta={
+        <StatusPill tone={tone} size="xs" pulse={service.healthy && !service.stale}>
           {statusLabel}
-        </span>
+        </StatusPill>
+      }
+    >
+      <div className="flex items-start gap-3 mb-3">
+        <div className="w-10 h-10 border border-[#2a3658] bg-[#05080f] flex items-center justify-center shrink-0">
+          <Icon
+            className={[
+              "w-4 h-4",
+              service.stale
+                ? "text-gray-600"
+                : service.healthy
+                  ? "text-amber-400"
+                  : "text-red-400",
+            ].join(" ")}
+          />
+        </div>
+        <p className="text-xs text-gray-500 leading-relaxed">
+          {meta.description}
+        </p>
       </div>
 
-      <p className="text-xs text-gray-500 mb-3">
-        {SERVICE_DESCRIPTIONS[service.name]}
-      </p>
-
-      <div className="space-y-1.5 text-xs">
-        <div className="flex justify-between">
-          <span className="text-gray-500">Uptime</span>
-          <span className="font-mono">{formatUptime(service.uptime_seconds)}</span>
+      <dl className="space-y-1 font-data text-[11px]">
+        <div className="flex justify-between border-t border-[#141d35] pt-1.5">
+          <dt className="text-gray-500 uppercase tracking-[0.14em]">uptime</dt>
+          <dd className="text-gray-200 tabular-nums">
+            {formatUptime(service.uptime_seconds)}
+          </dd>
         </div>
         {service.details &&
           Object.entries(service.details).map(([k, v]) => (
             <div key={k} className="flex justify-between">
-              <span className="text-gray-500 capitalize">
+              <dt className="text-gray-500 uppercase tracking-[0.14em]">
                 {k.replace(/_/g, " ")}
-              </span>
-              <span className="font-mono text-gray-700">
-                {typeof v === "boolean" ? (v ? "Yes" : "No") : String(v)}
-              </span>
+              </dt>
+              <dd className="text-gray-300 text-right truncate ml-3">
+                {typeof v === "boolean"
+                  ? v
+                    ? "YES"
+                    : "NO"
+                  : String(v)}
+              </dd>
             </div>
           ))}
-      </div>
-    </div>
-  );
-}
-
-function StatTile({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4">
-      <div className="text-2xl font-bold tracking-tight">
-        {value.toLocaleString()}
-      </div>
-      <div className="text-xs text-gray-500 mt-0.5 capitalize">
-        {label.replace(/_/g, " ")}
-      </div>
-    </div>
+      </dl>
+    </Panel>
   );
 }
 
@@ -121,48 +171,80 @@ export default function SystemPage() {
     return () => clearInterval(interval);
   }, []);
 
+  const healthyCount = status?.services.filter(
+    (s) => s.healthy && !s.stale
+  ).length;
+  const total = status?.services.length ?? 0;
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">System Status</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Live health of the six Palantir microservices
-        </p>
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <div className="font-data text-[10px] uppercase tracking-[0.24em] text-amber-500">
+            // DIAGNOSTICS
+          </div>
+          <h1 className="text-2xl md:text-3xl font-semibold text-gray-100 mt-1">
+            Service integrity
+          </h1>
+          <p className="text-sm text-gray-500 mt-1 max-w-2xl">
+            Live health of the six Palantir microservices. Refresh is
+            continuous; stale services indicate a missing heartbeat.
+          </p>
+        </div>
+        <StatusPill
+          tone={healthyCount === total && total > 0 ? "green" : "amber"}
+          size="sm"
+          pulse
+        >
+          {healthyCount ?? "--"} / {total || "--"} OPERATIONAL
+        </StatusPill>
       </div>
 
-      {/* Stats */}
-      {stats && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <StatTile label="Persons" value={stats.persons} />
-          <StatTile label="Sessions" value={stats.sessions} />
-          <StatTile label="Events" value={stats.events} />
-          <StatTile
-            label="Engagement samples"
-            value={stats.engagement_samples}
-          />
-          <StatTile
-            label="Automation rules"
-            value={stats.automation_rules}
-          />
-          <StatTile label="Conversations" value={stats.conversations} />
-        </div>
+      {/* Stats bar */}
+      {stats ? (
+        <Panel label="LEDGER" title="Archive counters">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-5">
+            <MetricKPI label="Persons" value={stats.persons} tone="amber" />
+            <MetricKPI label="Sessions" value={stats.sessions} tone="cyan" />
+            <MetricKPI label="Events" value={stats.events.toLocaleString()} tone="amber" />
+            <MetricKPI
+              label="Engagement samples"
+              value={stats.engagement_samples.toLocaleString()}
+              tone="cyan"
+            />
+            <MetricKPI
+              label="Directives"
+              value={stats.automation_rules}
+              tone="amber"
+            />
+            <MetricKPI
+              label="Conversations"
+              value={stats.conversations}
+              tone="cyan"
+            />
+          </div>
+        </Panel>
+      ) : (
+        <Panel label="LEDGER" title="Archive counters">
+          <LoadingLines rows={2} />
+        </Panel>
       )}
 
-      {/* Service cards */}
+      {/* Services */}
       <div>
-        <h2 className="text-base font-semibold text-gray-700 mb-3">Services</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {status?.services.map((svc) => (
-            <ServiceCard key={svc.name} service={svc} />
-          ))}
-        </div>
+        <SectionHeader label="SERVICES" title="Microservice health" />
+        {status ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {status.services.map((svc) => (
+              <ServiceCard key={svc.name} service={svc} />
+            ))}
+          </div>
+        ) : (
+          <Panel label="LOADING" title="Polling services">
+            <LoadingLines rows={4} />
+          </Panel>
+        )}
       </div>
-
-      {!status && (
-        <div className="text-center py-12 text-gray-400 animate-pulse">
-          Loading system status...
-        </div>
-      )}
     </div>
   );
 }

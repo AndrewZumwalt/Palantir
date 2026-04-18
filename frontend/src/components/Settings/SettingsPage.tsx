@@ -1,5 +1,20 @@
+import {
+  AlertTriangle,
+  Brain,
+  Camera,
+  EyeOff,
+  Gauge,
+  KeyRound,
+  Play,
+  Trash2,
+  Workflow,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { Button } from "../ui/Button";
+import { LoadingLines } from "../ui/EmptyState";
+import { Panel, SectionHeader } from "../ui/Panel";
+import { StatusPill } from "../ui/StatusPill";
 
 interface ConfigData {
   retention_days: number;
@@ -8,14 +23,8 @@ interface ConfigData {
   anthropic_configured: boolean;
   automation_enabled: boolean;
   allow_shell_commands: boolean;
-  camera: {
-    width: number;
-    height: number;
-    fps: number;
-  };
-  engagement: {
-    smoothing_window_seconds: number;
-  };
+  camera: { width: number; height: number; fps: number };
+  engagement: { smoothing_window_seconds: number };
 }
 
 interface RetentionResult {
@@ -23,33 +32,49 @@ interface RetentionResult {
   events_deleted: number;
 }
 
-function SettingCard({
-  title,
-  description,
+function DetailRow({
+  label,
   children,
 }: {
-  title: string;
-  description?: string;
+  label: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-5">
-      <h3 className="text-base font-semibold text-gray-900">{title}</h3>
-      {description && (
-        <p className="text-sm text-gray-500 mt-1 mb-4">{description}</p>
-      )}
-      <div className={description ? "" : "mt-4"}>{children}</div>
+    <div className="flex items-center justify-between py-1.5 font-data text-[11px]">
+      <span className="text-gray-500 uppercase tracking-[0.14em]">{label}</span>
+      <span className="text-gray-200 tabular-nums">{children}</span>
     </div>
   );
 }
 
-function StatusDot({ ok, label }: { ok: boolean; label: string }) {
+function IntegrationRow({
+  ok,
+  label,
+  description,
+  icon: Icon,
+}: {
+  ok: boolean;
+  label: string;
+  description: string;
+  icon: React.ComponentType<{ className?: string }>;
+}) {
   return (
-    <div className="flex items-center gap-2">
-      <span
-        className={`w-2 h-2 rounded-full ${ok ? "bg-emerald-500" : "bg-amber-500"}`}
-      />
-      <span className="text-sm text-gray-700">{label}</span>
+    <div className="flex items-center gap-3 py-2 border-b border-[#141d35] last:border-0">
+      <div
+        className={[
+          "w-9 h-9 border flex items-center justify-center shrink-0",
+          ok ? "border-emerald-700/50 bg-emerald-500/5" : "border-amber-700/50 bg-amber-500/5",
+        ].join(" ")}
+      >
+        <Icon className={ok ? "w-4 h-4 text-emerald-400" : "w-4 h-4 text-amber-400"} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm text-gray-100">{label}</div>
+        <div className="text-xs text-gray-500">{description}</div>
+      </div>
+      <StatusPill tone={ok ? "green" : "amber"} size="xs">
+        {ok ? "OK" : "ATTENTION"}
+      </StatusPill>
     </div>
   );
 }
@@ -59,9 +84,7 @@ export default function SettingsPage() {
   const [privacyMode, setPrivacyMode] = useState(false);
   const [loading, setLoading] = useState(true);
   const [cleanupRunning, setCleanupRunning] = useState(false);
-  const [cleanupResult, setCleanupResult] = useState<RetentionResult | null>(
-    null,
-  );
+  const [cleanupResult, setCleanupResult] = useState<RetentionResult | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -89,7 +112,7 @@ export default function SettingsPage() {
       const result = await api.post<RetentionResult>("/system/retention/cleanup");
       setCleanupResult(result);
     } catch {
-      // Ignore
+      // ignore
     } finally {
       setCleanupRunning(false);
     }
@@ -97,151 +120,228 @@ export default function SettingsPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-gray-400 animate-pulse">
-        Loading settings...
+      <div className="space-y-4">
+        <h1 className="text-2xl font-semibold text-gray-100">Protocols</h1>
+        <Panel label="LOADING" title="Fetching protocols">
+          <LoadingLines rows={5} />
+        </Panel>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Privacy, data retention, and system configuration
-        </p>
+    <div className="space-y-6 max-w-4xl">
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <div className="font-data text-[10px] uppercase tracking-[0.24em] text-amber-500">
+            // PROTOCOLS
+          </div>
+          <h1 className="text-2xl md:text-3xl font-semibold text-gray-100 mt-1">
+            Privacy &amp; configuration
+          </h1>
+          <p className="text-sm text-gray-500 mt-1 max-w-2xl">
+            Global toggles for surveillance, data retention, and integrations.
+            Hardware configuration is declared in{" "}
+            <span className="font-data text-amber-400">
+              config/environment.toml
+            </span>
+            .
+          </p>
+        </div>
       </div>
 
-      {/* Privacy mode */}
-      <SettingCard
-        title="Privacy Mode"
-        description="When enabled, cameras, microphones, and AI processing are paused. All identification is disabled until you turn it off."
+      {/* ============ PRIVACY HERO ============ */}
+      <Panel
+        label="PRIVACY VEIL"
+        title="Master surveillance switch"
+        tone={privacyMode ? "danger" : "amber"}
+        brackets
       >
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-gray-900">
-              Classroom recording
-            </p>
-            <p className="text-xs text-gray-500 mt-0.5">
-              {privacyMode
-                ? "Paused — no audio/video is being processed"
-                : "Active — system is listening and watching"}
-            </p>
-          </div>
-          <button
-            onClick={togglePrivacy}
-            className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
-              privacyMode ? "bg-red-500" : "bg-emerald-500"
-            }`}
-          >
-            <span
-              className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
-                privacyMode ? "translate-x-6" : "translate-x-1"
-              }`}
-            />
-          </button>
-        </div>
-      </SettingCard>
-
-      {/* Data retention */}
-      <SettingCard
-        title="Data Retention"
-        description="Events older than the retention period are automatically deleted. Engagement samples are kept for 30 days."
-      >
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-700">
-              Event retention period
-            </span>
-            <span className="text-sm font-mono font-medium">
-              {config?.retention_days} days
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-700">
-              Delete data when unenrolling
-            </span>
-            <span className="text-sm font-mono font-medium">
-              {config?.auto_delete_on_unenroll ? "Yes" : "No"}
-            </span>
-          </div>
-          <div className="pt-3 border-t border-gray-100 flex items-center justify-between">
-            <span className="text-xs text-gray-500">
-              Run cleanup manually
-            </span>
-            <button
-              onClick={runCleanup}
-              disabled={cleanupRunning}
-              className="px-3 py-1.5 text-sm rounded-md border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50"
+        <div className="flex items-center justify-between gap-6 flex-wrap">
+          <div className="flex items-center gap-4">
+            <div
+              className={[
+                "w-14 h-14 border flex items-center justify-center",
+                privacyMode
+                  ? "border-red-700/60 bg-red-500/10"
+                  : "border-amber-700/50 bg-amber-500/5",
+              ].join(" ")}
             >
-              {cleanupRunning ? "Running..." : "Run Now"}
-            </button>
+              <EyeOff
+                className={[
+                  "w-6 h-6",
+                  privacyMode ? "text-red-400" : "text-amber-400 breathe",
+                ].join(" ")}
+              />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-lg font-semibold text-gray-100">
+                  {privacyMode ? "VEIL ENGAGED" : "CAPTURE ACTIVE"}
+                </span>
+                <StatusPill
+                  tone={privacyMode ? "red" : "amber"}
+                  size="xs"
+                  pulse={!privacyMode}
+                >
+                  {privacyMode ? "LOCKED" : "LIVE"}
+                </StatusPill>
+              </div>
+              <p className="text-sm text-gray-500 max-w-md mt-0.5">
+                {privacyMode
+                  ? "Cameras, microphones, and inference paused. Nothing is being observed."
+                  : "Cameras, microphones, and inference are running. Events are being recorded."}
+              </p>
+            </div>
           </div>
-          {cleanupResult && (
-            <div className="text-xs text-emerald-700 bg-emerald-50 rounded px-2 py-1.5">
-              Deleted {cleanupResult.events_deleted} old events.
-            </div>
-          )}
+          <Button
+            variant={privacyMode ? "danger" : "primary"}
+            size="lg"
+            iconLeft={<EyeOff className="w-4 h-4" />}
+            onClick={togglePrivacy}
+          >
+            {privacyMode ? "DISENGAGE VEIL" : "ENGAGE VEIL"}
+          </Button>
         </div>
-      </SettingCard>
+      </Panel>
 
-      {/* System integrations */}
-      <SettingCard
-        title="System Integrations"
-        description="External services and authentication configured via environment."
-      >
-        <div className="space-y-2">
-          <StatusDot
+      {/* ============ RETENTION ============ */}
+      <div>
+        <SectionHeader label="RETENTION" title="Data lifecycle" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Panel label="CONFIG" title="Auto-purge">
+            <DetailRow label="event retention">
+              {config?.retention_days} DAYS
+            </DetailRow>
+            <DetailRow label="purge on unenroll">
+              {config?.auto_delete_on_unenroll ? "YES" : "NO"}
+            </DetailRow>
+            <DetailRow label="engagement samples">30 DAYS</DetailRow>
+            <p className="mt-3 text-xs text-gray-500 leading-relaxed border-t border-[#141d35] pt-3">
+              Events older than the retention period are deleted by a nightly
+              timer. You can also run the purge manually.
+            </p>
+          </Panel>
+
+          <Panel
+            label="ACTION"
+            title="Manual purge"
+            meta={
+              cleanupRunning ? (
+                <StatusPill tone="amber" size="xs" pulse>
+                  WORKING
+                </StatusPill>
+              ) : (
+                <StatusPill tone="gray" size="xs">
+                  IDLE
+                </StatusPill>
+              )
+            }
+          >
+            <p className="text-sm text-gray-400 mb-4">
+              Immediately delete all events older than{" "}
+              <span className="font-data text-amber-400 tabular-nums">
+                {config?.retention_days}
+              </span>{" "}
+              days. Cannot be undone.
+            </p>
+            <Button
+              variant="secondary"
+              onClick={runCleanup}
+              loading={cleanupRunning}
+              disabled={cleanupRunning}
+              iconLeft={
+                cleanupRunning ? (
+                  <Trash2 className="w-4 h-4" />
+                ) : (
+                  <Play className="w-4 h-4" />
+                )
+              }
+            >
+              {cleanupRunning ? "PURGING..." : "EXECUTE PURGE"}
+            </Button>
+            {cleanupResult && (
+              <div className="mt-4 px-3 py-2 bg-emerald-500/10 border border-emerald-700/40 font-data text-[11px] text-emerald-300">
+                &gt; {cleanupResult.events_deleted} EVENTS PURGED FROM ARCHIVE
+              </div>
+            )}
+          </Panel>
+        </div>
+      </div>
+
+      {/* ============ INTEGRATIONS ============ */}
+      <Panel label="INTEGRATIONS" title="External services &amp; auth">
+        <div className="space-y-0">
+          <IntegrationRow
             ok={!!config?.anthropic_configured}
-            label={
+            icon={Brain}
+            label="Anthropic API"
+            description={
               config?.anthropic_configured
-                ? "Anthropic API configured"
-                : "Anthropic API key missing — set ANTHROPIC_API_KEY"
+                ? "Cognitive backend responding"
+                : "ANTHROPIC_API_KEY is not set"
             }
           />
-          <StatusDot
+          <IntegrationRow
             ok={!!config?.auth_configured}
-            label={
+            icon={KeyRound}
+            label="Web authentication"
+            description={
               config?.auth_configured
-                ? "Web authentication enabled"
-                : "No auth token configured (development mode)"
+                ? "Bearer token required for all requests"
+                : "Auth disabled — development mode"
             }
           />
-          <StatusDot
+          <IntegrationRow
             ok={!!config?.automation_enabled}
-            label={
+            icon={Workflow}
+            label="Directive engine"
+            description={
               config?.automation_enabled
-                ? "Automation engine enabled"
-                : "Automation engine disabled"
+                ? "Rules will fire on matching triggers"
+                : "Directives are disabled"
             }
           />
-          {config?.allow_shell_commands && (
-            <div className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1.5 mt-2">
-              Warning: shell command automation is enabled. Rules can execute
-              arbitrary shell commands.
-            </div>
-          )}
         </div>
-      </SettingCard>
+        {config?.allow_shell_commands && (
+          <div className="mt-4 flex items-start gap-2 px-3 py-2 bg-amber-500/10 border border-amber-600/60 font-data text-[11px] text-amber-200">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />
+            <span>
+              Shell-command directives are permitted. Rules may execute
+              arbitrary commands on this host. Review{" "}
+              <strong>allow_shell_commands</strong> before deployment.
+            </span>
+          </div>
+        )}
+      </Panel>
 
-      {/* Hardware info */}
-      <SettingCard
-        title="Hardware Configuration"
-        description="Read-only view of the current camera and engagement settings. Modify via config/environment.toml."
-      >
-        <div className="grid grid-cols-2 gap-y-2 text-sm">
-          <span className="text-gray-600">Camera resolution</span>
-          <span className="font-mono text-right">
-            {config?.camera.width} × {config?.camera.height}
-          </span>
-          <span className="text-gray-600">Camera FPS</span>
-          <span className="font-mono text-right">{config?.camera.fps}</span>
-          <span className="text-gray-600">Engagement smoothing</span>
-          <span className="font-mono text-right">
-            {config?.engagement.smoothing_window_seconds}s
-          </span>
+      {/* ============ HARDWARE ============ */}
+      <Panel label="HARDWARE" title="Read-only configuration">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+          <div>
+            <div className="flex items-center gap-2 mb-2 text-xs text-gray-400 uppercase tracking-[0.18em]">
+              <Camera className="w-3.5 h-3.5 text-amber-500" />
+              Camera
+            </div>
+            <DetailRow label="resolution">
+              {config?.camera.width} × {config?.camera.height}
+            </DetailRow>
+            <DetailRow label="framerate">{config?.camera.fps} FPS</DetailRow>
+          </div>
+          <div>
+            <div className="flex items-center gap-2 mb-2 text-xs text-gray-400 uppercase tracking-[0.18em]">
+              <Gauge className="w-3.5 h-3.5 text-amber-500" />
+              Engagement
+            </div>
+            <DetailRow label="smoothing window">
+              {config?.engagement.smoothing_window_seconds}s
+            </DetailRow>
+          </div>
         </div>
-      </SettingCard>
+        <p className="mt-4 font-data text-[10px] text-gray-600 uppercase tracking-[0.14em]">
+          // edit config/environment.toml and restart services to change these
+        </p>
+      </Panel>
     </div>
   );
 }

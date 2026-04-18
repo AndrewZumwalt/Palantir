@@ -1,5 +1,26 @@
+import {
+  Clock,
+  Cpu,
+  DoorOpen,
+  LogOut,
+  Megaphone,
+  Mic,
+  Pencil,
+  Plus,
+  Terminal,
+  Trash2,
+  Volume2,
+  Workflow,
+  Zap,
+} from "lucide-react";
 import { useEffect, useState } from "react";
+import type { ComponentType } from "react";
 import { api } from "../../api/client";
+import { Button } from "../ui/Button";
+import { EmptyState, LoadingLines } from "../ui/EmptyState";
+import { Toggle } from "../ui/Field";
+import { Panel } from "../ui/Panel";
+import { StatusPill } from "../ui/StatusPill";
 import RuleEditor from "./RuleEditor";
 
 export interface AutomationRule {
@@ -19,18 +40,24 @@ export interface Person {
   role: string;
 }
 
-const TRIGGER_LABEL: Record<string, string> = {
-  person_enters: "When person enters",
-  person_exits: "When person exits",
-  schedule: "At scheduled time",
-  voice_command: "On voice command",
+const TRIGGER_META: Record<
+  string,
+  { label: string; icon: ComponentType<{ className?: string }> }
+> = {
+  person_enters: { label: "SUBJECT ENTERS", icon: DoorOpen },
+  person_exits: { label: "SUBJECT EXITS", icon: LogOut },
+  schedule: { label: "ON SCHEDULE", icon: Clock },
+  voice_command: { label: "VOICE CMD", icon: Mic },
 };
 
-const ACTION_LABEL: Record<string, string> = {
-  gpio: "GPIO output",
-  tts: "Speak response",
-  notification: "Send notification",
-  command: "Run shell command",
+const ACTION_META: Record<
+  string,
+  { label: string; icon: ComponentType<{ className?: string }> }
+> = {
+  gpio: { label: "GPIO PULSE", icon: Cpu },
+  tts: { label: "SPEAK", icon: Volume2 },
+  notification: { label: "NOTIFY", icon: Megaphone },
+  command: { label: "SHELL", icon: Terminal },
 };
 
 function RuleCard({
@@ -46,6 +73,9 @@ function RuleCard({
   onToggle: () => void;
   onDelete: () => void;
 }) {
+  const TriggerIcon = TRIGGER_META[rule.trigger_type]?.icon ?? Zap;
+  const ActionIcon = ACTION_META[rule.action_type]?.icon ?? Zap;
+
   const describeTrigger = () => {
     const cfg = rule.trigger_config;
     switch (rule.trigger_type) {
@@ -53,14 +83,16 @@ function RuleCard({
       case "person_exits": {
         const parts: string[] = [];
         if (cfg.person_id)
-          parts.push(personNames[cfg.person_id as string] || String(cfg.person_id));
+          parts.push(
+            personNames[cfg.person_id as string] || String(cfg.person_id)
+          );
         if (cfg.role) parts.push(`any ${cfg.role}`);
-        return parts.length ? parts.join(", ") : "any person";
+        return parts.length ? parts.join(", ") : "any subject";
       }
       case "schedule":
         return `${cfg.time || "—"}${
           Array.isArray(cfg.days) && cfg.days.length
-            ? ` (${(cfg.days as string[]).join(", ")})`
+            ? ` · ${(cfg.days as string[]).join(", ")}`
             : ""
         }`;
       case "voice_command":
@@ -74,9 +106,9 @@ function RuleCard({
     const cfg = rule.action_config;
     switch (rule.action_type) {
       case "gpio":
-        return `Pin ${cfg.pin ?? "?"} → ${cfg.state ?? "?"}`;
+        return `pin ${cfg.pin ?? "?"} → ${cfg.state ?? "?"}`;
       case "tts":
-        return `Say: "${String(cfg.text ?? "").slice(0, 40)}"`;
+        return `"${String(cfg.text ?? "").slice(0, 48)}"`;
       case "notification":
         return String(cfg.message ?? "").slice(0, 60);
       case "command":
@@ -88,74 +120,80 @@ function RuleCard({
 
   return (
     <div
-      className={`bg-white rounded-xl border p-5 transition-opacity ${
-        rule.enabled ? "border-gray-200" : "border-gray-200 opacity-60"
-      }`}
+      className={[
+        "group relative bg-[#0a0f1c] border transition-all",
+        rule.enabled
+          ? "border-[#1c2540] hover:border-amber-700/50"
+          : "border-[#141d35] opacity-60 hover:opacity-80",
+      ].join(" ")}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="text-base font-semibold truncate">{rule.name}</h3>
-            {!rule.enabled && (
-              <span className="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
-                Disabled
-              </span>
+      {/* Active stripe */}
+      {rule.enabled && (
+        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-amber-500" />
+      )}
+
+      <div className="p-4 pl-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h3 className="text-base font-semibold text-gray-100 truncate">
+                {rule.name}
+              </h3>
+              {!rule.enabled && (
+                <StatusPill tone="gray" size="xs">
+                  DISABLED
+                </StatusPill>
+              )}
+            </div>
+            {rule.description && (
+              <p className="text-xs text-gray-500 mt-1">{rule.description}</p>
             )}
           </div>
-          {rule.description && (
-            <p className="text-sm text-gray-500 mt-0.5">{rule.description}</p>
-          )}
+          <Toggle checked={rule.enabled} onChange={onToggle} />
         </div>
-        <button
-          onClick={onToggle}
-          className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-            rule.enabled ? "bg-indigo-500" : "bg-gray-300"
-          }`}
-        >
-          <span
-            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-              rule.enabled ? "translate-x-6" : "translate-x-1"
-            }`}
-          />
-        </button>
-      </div>
 
-      <div className="mt-3 space-y-1.5 text-xs">
-        <div className="flex gap-2">
-          <span className="text-gray-500 w-20 flex-shrink-0">Trigger:</span>
-          <span className="text-gray-900">
-            <span className="font-medium">
-              {TRIGGER_LABEL[rule.trigger_type] || rule.trigger_type}
-            </span>
-            {" — "}
-            <span className="text-gray-700">{describeTrigger()}</span>
-          </span>
+        {/* Trigger / Action diagram */}
+        <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center gap-2 font-data text-[11px]">
+          <div className="bg-[#05080f] border border-[#1c2540] px-2.5 py-2 min-w-0">
+            <div className="flex items-center gap-1.5 text-cyan-400 uppercase tracking-[0.14em] text-[10px]">
+              <TriggerIcon className="w-3 h-3" />
+              {TRIGGER_META[rule.trigger_type]?.label ?? rule.trigger_type}
+            </div>
+            <div className="text-gray-300 truncate mt-0.5">
+              {describeTrigger()}
+            </div>
+          </div>
+          <div className="text-amber-500 text-lg select-none">›</div>
+          <div className="bg-[#05080f] border border-[#1c2540] px-2.5 py-2 min-w-0">
+            <div className="flex items-center gap-1.5 text-amber-400 uppercase tracking-[0.14em] text-[10px]">
+              <ActionIcon className="w-3 h-3" />
+              {ACTION_META[rule.action_type]?.label ?? rule.action_type}
+            </div>
+            <div className="text-gray-300 truncate mt-0.5">
+              {describeAction()}
+            </div>
+          </div>
         </div>
-        <div className="flex gap-2">
-          <span className="text-gray-500 w-20 flex-shrink-0">Action:</span>
-          <span className="text-gray-900">
-            <span className="font-medium">
-              {ACTION_LABEL[rule.action_type] || rule.action_type}
-            </span>
-            {" — "}
-            <span className="text-gray-700 font-mono">{describeAction()}</span>
-          </span>
-        </div>
-      </div>
 
-      <div className="mt-4 flex gap-2 pt-3 border-t border-gray-100">
-        <button
-          onClick={onEdit}
-          className="text-xs px-3 py-1 rounded border border-gray-200 hover:bg-gray-50"
-        >
-          Edit
-        </button>
-        <button
-          onClick={onDelete}
-          className="text-xs px-3 py-1 rounded border border-red-200 text-red-600 hover:bg-red-50"
-        >
-          Delete
-        </button>
+        <div className="mt-4 flex gap-1.5 pt-3 border-t border-[#141d35]">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onEdit}
+            iconLeft={<Pencil className="w-3 h-3" />}
+          >
+            EDIT
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onDelete}
+            iconLeft={<Trash2 className="w-3 h-3" />}
+            className="text-red-400 hover:bg-red-500/10"
+          >
+            DELETE
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -177,7 +215,7 @@ export default function AutomationPage() {
       setRules(rulesData.rules);
       setPersons(personsData.persons);
     } catch {
-      // Ignore
+      // ignore
     } finally {
       setLoading(false);
     }
@@ -211,35 +249,74 @@ export default function AutomationPage() {
     load();
   };
 
+  const activeCount = rules.filter((r) => r.enabled).length;
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">
-            Automation Rules
+          <div className="font-data text-[10px] uppercase tracking-[0.24em] text-amber-500">
+            // DIRECTIVES
+          </div>
+          <h1 className="text-2xl md:text-3xl font-semibold text-gray-100 mt-1">
+            Automation rulebook
           </h1>
-          <p className="text-sm text-gray-500 mt-1">
-            {rules.length} rule{rules.length === 1 ? "" : "s"} configured
+          <p className="text-sm text-gray-500 mt-1 max-w-2xl">
+            When <strong className="text-amber-400">trigger</strong> happens,
+            execute <strong className="text-cyan-400">action</strong>. Rules
+            fire locally with no external dependencies.
           </p>
         </div>
-        <button
+        <Button
+          variant="primary"
+          size="md"
+          iconLeft={<Plus className="w-4 h-4" />}
           onClick={() => setCreating(true)}
-          className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700"
         >
-          + New Rule
-        </button>
+          NEW DIRECTIVE
+        </Button>
+      </div>
+
+      {/* Strip of counts */}
+      <div className="grid grid-cols-3 gap-2 font-data text-[11px]">
+        <div className="flex items-center justify-between bg-[#0a0f1c] border border-[#1c2540] px-3 py-2">
+          <span className="text-gray-500 uppercase tracking-[0.16em]">TOTAL</span>
+          <span className="text-gray-100 tabular-nums">{rules.length}</span>
+        </div>
+        <div className="flex items-center justify-between bg-[#0a0f1c] border border-amber-700/50 px-3 py-2">
+          <span className="text-amber-400 uppercase tracking-[0.16em]">ACTIVE</span>
+          <span className="text-amber-300 tabular-nums">{activeCount}</span>
+        </div>
+        <div className="flex items-center justify-between bg-[#0a0f1c] border border-[#1c2540] px-3 py-2">
+          <span className="text-gray-500 uppercase tracking-[0.16em]">DORMANT</span>
+          <span className="text-gray-400 tabular-nums">
+            {rules.length - activeCount}
+          </span>
+        </div>
       </div>
 
       {loading ? (
-        <div className="text-center py-12 text-gray-400 animate-pulse">
-          Loading rules...
-        </div>
+        <Panel label="LOADING" title="Fetching rulebook">
+          <LoadingLines rows={4} />
+        </Panel>
       ) : rules.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-          <p className="text-gray-400 text-sm">
-            No automation rules yet. Click "New Rule" to create one.
-          </p>
-        </div>
+        <Panel label="EMPTY">
+          <EmptyState
+            icon={<Workflow className="w-5 h-5" />}
+            title="NO DIRECTIVES PROGRAMMED"
+            description="Automation rules let the system act on detections (greetings, GPIO triggers, notifications, shell hooks)."
+            action={
+              <Button
+                variant="primary"
+                size="md"
+                iconLeft={<Plus className="w-4 h-4" />}
+                onClick={() => setCreating(true)}
+              >
+                PROGRAM FIRST RULE
+              </Button>
+            }
+          />
+        </Panel>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {rules.map((rule) => (

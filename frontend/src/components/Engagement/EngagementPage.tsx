@@ -1,6 +1,11 @@
+import { Activity, Grid3x3, TableProperties } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
 import { useWebSocket } from "../../hooks/useWebSocket";
+import { EmptyState, LoadingLines } from "../ui/EmptyState";
+import { LiveIndicator } from "../ui/LiveIndicator";
+import { Panel, SectionHeader } from "../ui/Panel";
+import { StatusPill } from "../ui/StatusPill";
 import EngagementHeatmap from "./EngagementHeatmap";
 
 interface EngagementScore {
@@ -23,45 +28,51 @@ interface LiveEngagement {
   confidence: number;
 }
 
-const STATE_COLORS: Record<string, string> = {
-  working: "bg-emerald-100 text-emerald-800",
-  collaborating: "bg-blue-100 text-blue-800",
-  phone: "bg-red-100 text-red-800",
-  sleeping: "bg-gray-200 text-gray-700",
-  disengaged: "bg-amber-100 text-amber-800",
-  unknown: "bg-gray-100 text-gray-500",
+type StateKey =
+  | "working"
+  | "collaborating"
+  | "phone"
+  | "sleeping"
+  | "disengaged"
+  | "unknown";
+
+const STATE_TONE: Record<string, "green" | "cyan" | "red" | "gray" | "amber" | "violet"> = {
+  working: "green",
+  collaborating: "cyan",
+  phone: "red",
+  sleeping: "gray",
+  disengaged: "amber",
+  unknown: "gray",
 };
 
-const STATE_DOTS: Record<string, string> = {
-  working: "bg-emerald-500",
-  collaborating: "bg-blue-500",
-  phone: "bg-red-500",
-  sleeping: "bg-gray-400",
-  disengaged: "bg-amber-500",
-  unknown: "bg-gray-300",
+const STATE_DOT: Record<string, string> = {
+  working: "bg-emerald-400",
+  collaborating: "bg-cyan-400",
+  phone: "bg-red-400",
+  sleeping: "bg-gray-500",
+  disengaged: "bg-amber-400",
+  unknown: "bg-gray-600",
 };
 
-function ScoreBadge({ score }: { score: number }) {
-  let color = "bg-emerald-50 text-emerald-700 ring-emerald-600/20";
-  if (score < 40) color = "bg-red-50 text-red-700 ring-red-600/20";
-  else if (score < 70) color = "bg-amber-50 text-amber-700 ring-amber-600/20";
+type Tab = "live" | "scores" | "heatmap";
 
-  return (
-    <span
-      className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset ${color}`}
-    >
-      {score}%
-    </span>
-  );
+const TABS: { key: Tab; label: string; code: string; icon: typeof Activity }[] = [
+  { key: "live", label: "Live feed", code: "01", icon: Activity },
+  { key: "scores", label: "Session scores", code: "02", icon: TableProperties },
+  { key: "heatmap", label: "Heatmap", code: "03", icon: Grid3x3 },
+];
+
+function scoreBand(score: number): "green" | "amber" | "red" {
+  if (score < 40) return "red";
+  if (score < 70) return "amber";
+  return "green";
 }
 
 export default function EngagementPage() {
   const [sessionData, setSessionData] = useState<SessionInfo | null>(null);
   const [liveStates, setLiveStates] = useState<LiveEngagement[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"live" | "scores" | "heatmap">(
-    "live",
-  );
+  const [activeTab, setActiveTab] = useState<Tab>("live");
   const { subscribe } = useWebSocket();
 
   useEffect(() => {
@@ -72,21 +83,14 @@ export default function EngagementPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Subscribe to real-time engagement updates
   useEffect(() => {
-    const unsub = subscribe(
-      "vision:engagement",
-      (data: Record<string, unknown>) => {
-        const engagements = data.engagements as LiveEngagement[];
-        if (engagements) {
-          setLiveStates(engagements);
-        }
-      },
-    );
+    const unsub = subscribe("vision:engagement", (data) => {
+      const engagements = data.engagements as LiveEngagement[];
+      if (engagements) setLiveStates(engagements);
+    });
     return unsub;
   }, [subscribe]);
 
-  // Refresh scores periodically
   useEffect(() => {
     const interval = setInterval(() => {
       api
@@ -97,174 +101,231 @@ export default function EngagementPage() {
     return () => clearInterval(interval);
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-pulse text-gray-400">
-          Loading engagement data...
-        </div>
-      </div>
-    );
-  }
+  const visible = liveStates.filter((e) => !e.person_id.startsWith("unknown_"));
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">
-          Engagement Tracking
-        </h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Real-time student engagement classification and scoring
-        </p>
-      </div>
-
-      {/* Tab navigation */}
-      <div className="border-b border-gray-200">
-        <nav className="-mb-px flex gap-6">
-          {(["live", "scores", "heatmap"] as const).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`pb-3 text-sm font-medium border-b-2 transition-colors capitalize ${
-                activeTab === tab
-                  ? "border-indigo-500 text-indigo-600"
-                  : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
-              }`}
-            >
-              {tab === "live"
-                ? "Live View"
-                : tab === "scores"
-                  ? "Session Scores"
-                  : "Heatmap"}
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      {/* Live engagement states */}
-      {activeTab === "live" && (
-        <div className="space-y-4">
-          {/* Legend */}
-          <div className="flex flex-wrap gap-3">
-            {Object.entries(STATE_DOTS).map(([state, dot]) => (
-              <div key={state} className="flex items-center gap-1.5 text-xs">
-                <span className={`w-2.5 h-2.5 rounded-full ${dot}`} />
-                <span className="capitalize text-gray-600">{state}</span>
-              </div>
-            ))}
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <div className="font-data text-[10px] uppercase tracking-[0.24em] text-amber-500">
+            // BEHAVIORAL INDEX
           </div>
+          <h1 className="text-2xl md:text-3xl font-semibold text-gray-100 mt-1">
+            Engagement telemetry
+          </h1>
+          <p className="text-sm text-gray-500 mt-1 max-w-2xl">
+            Pose-derived classification of subject focus states. Inferred
+            locally from the vision pipeline; aggregate scoring is
+            per-session only.
+          </p>
+        </div>
+        <LiveIndicator label="STREAMING" tone="amber" />
+      </div>
 
-          {liveStates.length === 0 ? (
-            <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
-              <p className="text-gray-400 text-sm">
-                No engagement data yet. The vision service needs to detect
-                identified students with pose estimation active.
-              </p>
-            </div>
+      {/* Tab strip */}
+      <div className="flex gap-1 border-b border-[#1c2540]">
+        {TABS.map((tab) => {
+          const active = activeTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={[
+                "relative -mb-px px-4 py-2.5 inline-flex items-center gap-2 border-b-2 font-data text-xs uppercase tracking-[0.16em] transition-colors",
+                active
+                  ? "border-amber-500 text-amber-400"
+                  : "border-transparent text-gray-500 hover:text-gray-200",
+              ].join(" ")}
+            >
+              <tab.icon className="w-3.5 h-3.5" />
+              <span className="text-gray-600 mr-1">0{TABS.indexOf(tab) + 1}.</span>
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {loading ? (
+        <Panel label="LOADING" title="Fetching index">
+          <LoadingLines rows={4} />
+        </Panel>
+      ) : activeTab === "live" ? (
+        <div className="space-y-4">
+          <LegendRow />
+          {visible.length === 0 ? (
+            <Panel label="LIVE" title="Active subjects">
+              <EmptyState
+                icon={<Activity className="w-5 h-5" />}
+                title="NO BEHAVIORAL DATA"
+                description="The vision service needs identified subjects with pose estimation running before states can be classified."
+              />
+            </Panel>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {liveStates
-                .filter((e) => !e.person_id.startsWith("unknown_"))
-                .map((eng) => (
-                  <div
-                    key={eng.person_id}
-                    className="bg-white rounded-xl border border-gray-200 p-4 flex items-center gap-4"
-                  >
-                    <div
-                      className={`w-10 h-10 rounded-full flex items-center justify-center ${STATE_COLORS[eng.state] || STATE_COLORS.unknown}`}
-                    >
-                      <span className="text-sm font-semibold">
-                        {(eng.name || "?")[0].toUpperCase()}
-                      </span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 truncate">
-                        {eng.name || eng.person_id}
-                      </p>
-                      <p className="text-xs text-gray-500 capitalize">
-                        {eng.state}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${STATE_COLORS[eng.state] || STATE_COLORS.unknown}`}
-                      >
-                        {Math.round(eng.confidence * 100)}%
-                      </span>
-                    </div>
-                  </div>
-                ))}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {visible.map((eng) => (
+                <SubjectTile key={eng.person_id} eng={eng} />
+              ))}
             </div>
           )}
         </div>
-      )}
-
-      {/* Session scores */}
-      {activeTab === "scores" && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      ) : activeTab === "scores" ? (
+        <Panel
+          label="SESSION"
+          title="Aggregate scores"
+          meta={
+            <span>
+              {sessionData?.scores.length ?? 0} tracked
+            </span>
+          }
+        >
           {!sessionData?.scores.length ? (
-            <div className="p-12 text-center">
-              <p className="text-gray-400 text-sm">
-                No engagement scores computed for this session yet.
-              </p>
-            </div>
+            <EmptyState
+              icon={<TableProperties className="w-5 h-5" />}
+              title="NO SCORES YET"
+              description="Session engagement scores aggregate once enough samples are collected."
+            />
           ) : (
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Student
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Score
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Samples
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Breakdown
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {sessionData.scores.map((s) => (
-                  <tr key={s.person_id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                      {s.name}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <ScoreBadge score={s.score} />
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {s.total_samples}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex gap-1.5 flex-wrap">
-                        {Object.entries(s.breakdown).map(([state, count]) => (
-                          <span
-                            key={state}
-                            className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${STATE_COLORS[state] || STATE_COLORS.unknown}`}
-                          >
-                            <span className="capitalize">{state}</span>
-                            <span className="font-mono">
-                              {count as number}
-                            </span>
-                          </span>
-                        ))}
-                      </div>
-                    </td>
+            <div className="overflow-x-auto -mx-4">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[#1c2540] font-data text-[10px] uppercase tracking-[0.18em] text-gray-500">
+                    <th className="px-4 py-2.5 text-left">Subject</th>
+                    <th className="px-4 py-2.5 text-left">Score</th>
+                    <th className="px-4 py-2.5 text-left">Samples</th>
+                    <th className="px-4 py-2.5 text-left">Breakdown</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {sessionData.scores.map((s) => (
+                    <tr
+                      key={s.person_id}
+                      className="border-b border-[#141d35] hover:bg-[#0f1629]"
+                    >
+                      <td className="px-4 py-3 text-gray-200">{s.name}</td>
+                      <td className="px-4 py-3">
+                        <ScoreBar score={s.score} />
+                      </td>
+                      <td className="px-4 py-3 font-data text-gray-400 tabular-nums">
+                        {s.total_samples}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap gap-1.5">
+                          {Object.entries(s.breakdown).map(([state, count]) => (
+                            <StatusPill
+                              key={state}
+                              tone={STATE_TONE[state] || "gray"}
+                              size="xs"
+                              brackets={false}
+                              icon={
+                                <span
+                                  className={[
+                                    "w-1.5 h-1.5 rounded-full",
+                                    STATE_DOT[state] || STATE_DOT.unknown,
+                                  ].join(" ")}
+                                />
+                              }
+                            >
+                              {state} {count as number}
+                            </StatusPill>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
+        </Panel>
+      ) : (
+        <div>
+          <SectionHeader label="HEATMAP" title="Time-by-subject matrix" />
+          <EngagementHeatmap sessionId={sessionData?.session_id || null} />
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Heatmap */}
-      {activeTab === "heatmap" && (
-        <EngagementHeatmap sessionId={sessionData?.session_id || null} />
+function LegendRow() {
+  return (
+    <div className="flex flex-wrap gap-2 font-data text-[10px] uppercase tracking-[0.14em]">
+      {(["working", "collaborating", "disengaged", "phone", "sleeping", "unknown"] as StateKey[]).map(
+        (state) => (
+          <span
+            key={state}
+            className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#0a0f1c] border border-[#1c2540]"
+          >
+            <span className={["w-2 h-2 rounded-full", STATE_DOT[state]].join(" ")} />
+            <span className="text-gray-400">{state}</span>
+          </span>
+        )
       )}
+    </div>
+  );
+}
+
+function SubjectTile({ eng }: { eng: LiveEngagement }) {
+  const tone = STATE_TONE[eng.state] || "gray";
+  const pct = Math.round(eng.confidence * 100);
+  return (
+    <div className="bg-[#0a0f1c] border border-[#1c2540] p-4 hover:border-amber-700/50 transition-colors">
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 border border-[#2a3658] bg-[#05080f] flex items-center justify-center">
+          <span className="font-data text-sm text-amber-400">
+            {(eng.name || "?")[0].toUpperCase()}
+          </span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm text-gray-100 truncate">
+            {eng.name || eng.person_id}
+          </div>
+          <div className="font-data text-[10px] text-gray-500 uppercase tracking-[0.16em]">
+            {eng.person_id.slice(0, 14)}
+          </div>
+        </div>
+        <StatusPill tone={tone} size="xs">
+          {eng.state}
+        </StatusPill>
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <div className="flex-1 h-1 bg-[#05080f] border border-[#1c2540] overflow-hidden">
+          <div
+            className={[
+              "h-full",
+              tone === "green"
+                ? "bg-emerald-400"
+                : tone === "cyan"
+                  ? "bg-cyan-400"
+                  : tone === "red"
+                    ? "bg-red-400"
+                    : tone === "amber"
+                      ? "bg-amber-400"
+                      : "bg-gray-500",
+            ].join(" ")}
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <span className="font-data text-[10px] text-gray-400 w-10 text-right tabular-nums">
+          {pct}%
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ScoreBar({ score }: { score: number }) {
+  const band = scoreBand(score);
+  const color =
+    band === "green" ? "bg-emerald-400" : band === "amber" ? "bg-amber-400" : "bg-red-400";
+  return (
+    <div className="flex items-center gap-2 min-w-[140px]">
+      <div className="flex-1 h-2 bg-[#05080f] border border-[#1c2540]">
+        <div className={["h-full", color].join(" ")} style={{ width: `${score}%` }} />
+      </div>
+      <span className="font-data text-xs text-gray-300 tabular-nums w-12 text-right">
+        {score}%
+      </span>
     </div>
   );
 }
