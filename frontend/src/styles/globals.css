@@ -235,13 +235,14 @@ body::before {
     }
   }
 
-  /* CRT power-on — quick vertical expand with a white-ish brightness flash.
-     Used on modal/panel mount and (longer variant) on initial Layout mount. */
+  /* CRT power-on — vertical expand with a brightness flash.
+     .crt-on is the quick variant for modals/panels; .crt-on-lg is the
+     longer cinematic version used for the login → app handoff. */
   .crt-on {
     animation: crt-on 0.6s var(--ease-out-expo) both;
   }
   .crt-on-lg {
-    animation: crt-on 0.9s var(--ease-out-expo) both;
+    animation: crt-on-lg 1.6s var(--ease-out-expo) both;
     transform-origin: center center;
   }
 
@@ -260,6 +261,37 @@ body::before {
       opacity: 1;
       transform: scaleY(1) scaleX(1);
       filter: brightness(1);
+    }
+  }
+
+  /* Longer CRT on — slower horizontal sweep, brief hold on the line, then
+     the "phosphor settles" filter ramp. Lets the viewer actually read the
+     animation instead of flashing past it. */
+  @keyframes crt-on-lg {
+    0% {
+      opacity: 0;
+      transform: scaleY(0.004) scaleX(0.18);
+      filter: brightness(2.6) saturate(1.8);
+    }
+    18% {
+      opacity: 1;
+      transform: scaleY(0.004) scaleX(1.02);
+      filter: brightness(2.4) saturate(1.6);
+    }
+    38% {
+      opacity: 1;
+      transform: scaleY(1.02) scaleX(1);
+      filter: brightness(1.8) saturate(1.3);
+    }
+    70% {
+      opacity: 1;
+      transform: scaleY(1) scaleX(1);
+      filter: brightness(1.15) saturate(1.05);
+    }
+    100% {
+      opacity: 1;
+      transform: scaleY(1) scaleX(1);
+      filter: brightness(1) saturate(1);
     }
   }
 
@@ -310,7 +342,7 @@ body::before {
     pointer-events: none;
     z-index: 9999;
     background: rgba(251, 191, 36, 0.55);
-    animation: power-flash-in 0.55s ease-out forwards;
+    animation: power-flash-in 0.7s ease-out forwards;
   }
 
   @keyframes power-flash {

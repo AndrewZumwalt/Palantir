@@ -153,13 +153,14 @@ export default function Layout() {
   // Close mobile nav on route change
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
-  // When we first mount after a sign-in, briefly fire the handoff flash
-  // (starts at peak) and hold the crt-on-lg animation for its duration.
+  // When we first mount after a sign-in, fire the handoff flash (starts
+  // at peak, fades over the first beat of the CRT sweep) and hold the
+  // crt-on-lg animation for its full 1.6s duration.
   useEffect(() => {
     if (!booting) return;
     setFlashHandoff(true);
-    const offFlash = setTimeout(() => setFlashHandoff(false), 560);
-    const offBoot = setTimeout(() => setBooting(false), 950);
+    const offFlash = setTimeout(() => setFlashHandoff(false), 720);
+    const offBoot = setTimeout(() => setBooting(false), 1650);
     return () => {
       clearTimeout(offFlash);
       clearTimeout(offBoot);
@@ -175,8 +176,8 @@ export default function Layout() {
       setFlashRamp(true);
       setPowerCycling(false);
       setBooting(true);
-      setTimeout(() => setFlashRamp(false), 540);
-      setTimeout(() => setBooting(false), 900);
+      setTimeout(() => setFlashRamp(false), 700);
+      setTimeout(() => setBooting(false), 1650);
     }, 520);
   };
 
