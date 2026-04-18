@@ -4,21 +4,23 @@ import {
   Cctv,
   ChevronsLeft,
   ChevronsRight,
-  Eye,
   GaugeCircle,
   LogOut,
   Menu,
+  Power,
   ScrollText,
   Settings,
   ShieldCheck,
   UserPlus,
   Users,
   Workflow,
+  Eye,
 } from "lucide-react";
 import type { ComponentType } from "react";
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { clearAuthToken } from "../api/client";
+import { JUST_AUTHED_FLAG } from "./AuthGate";
 import { LiveIndicator } from "./ui/LiveIndicator";
 import { StatusPill } from "./ui/StatusPill";
 
@@ -114,6 +116,27 @@ export default function Layout() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Power cycle: when true we're inside a CRT-off → CRT-on reboot.
+  // On initial mount, if AuthGate set the just-authed flag, we play the
+  // same sequence so the login-to-app handoff feels like "system online".
+  const [booting, setBooting] = useState<boolean>(() => {
+    try {
+      const f = sessionStorage.getItem(JUST_AUTHED_FLAG);
+      if (f) {
+        sessionStorage.removeItem(JUST_AUTHED_FLAG);
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  });
+  const [powerCycling, setPowerCycling] = useState(false);
+  // `flashHandoff` starts at peak opacity (matches AuthGate's collapse
+  // brightness). `flashRamp` is the ramp-up/ramp-down flash used for the
+  // in-app power-cycle easter egg.
+  const [flashHandoff, setFlashHandoff] = useState(false);
+  const [flashRamp, setFlashRamp] = useState(false);
   const now = useClock();
 
   const active = NAV.find(
@@ -130,8 +153,44 @@ export default function Layout() {
   // Close mobile nav on route change
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
+  // When we first mount after a sign-in, briefly fire the handoff flash
+  // (starts at peak) and hold the crt-on-lg animation for its duration.
+  useEffect(() => {
+    if (!booting) return;
+    setFlashHandoff(true);
+    const offFlash = setTimeout(() => setFlashHandoff(false), 560);
+    const offBoot = setTimeout(() => setBooting(false), 950);
+    return () => {
+      clearTimeout(offFlash);
+      clearTimeout(offBoot);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Power-cycle easter egg — CRT-off, flash, CRT-on.
+  const powerCycle = () => {
+    if (powerCycling || booting) return;
+    setPowerCycling(true);
+    setTimeout(() => {
+      setFlashRamp(true);
+      setPowerCycling(false);
+      setBooting(true);
+      setTimeout(() => setFlashRamp(false), 540);
+      setTimeout(() => setBooting(false), 900);
+    }, 520);
+  };
+
+  const rootAnim = powerCycling
+    ? "crt-off"
+    : booting
+      ? "crt-on-lg"
+      : "";
+
   return (
-    <div className="min-h-dvh flex">
+    <div className={["min-h-dvh flex", rootAnim].filter(Boolean).join(" ")}>
+      {flashHandoff && <div className="power-flash-in" aria-hidden="true" />}
+      {flashRamp && <div className="power-flash" aria-hidden="true" />}
+
       {/* ===== SIDEBAR ===== */}
       <aside
         className={[
@@ -148,7 +207,7 @@ export default function Layout() {
           </div>
           {!collapsed && (
             <div className="min-w-0">
-              <div className="font-data text-[10px] uppercase tracking-[0.28em] text-amber-500">
+              <div className="font-data text-[10px] uppercase tracking-[0.28em] text-amber-500 glitch">
                 // PALANTIR
               </div>
               <div className="text-sm font-semibold text-gray-100">
@@ -348,21 +407,36 @@ export default function Layout() {
               </button>
             </div>
           </div>
-          {/* Hair-line amber accent that sweeps when idle */}
+          {/* Hair-line amber accent that sweeps full-width when idle */}
           <div className="relative h-px bg-[#1c2540] overflow-hidden">
-            <div className="absolute inset-y-0 w-1/3 scan-line" />
+            <div className="absolute inset-0 scan-line" />
           </div>
         </header>
 
-        <main className="flex-1 px-4 md:px-6 py-6 max-w-[1600px] w-full mx-auto">
+        <main
+          key={location.pathname}
+          className="flex-1 px-4 md:px-6 py-6 max-w-[1600px] w-full mx-auto page-in"
+        >
           <Outlet />
         </main>
 
         <footer className="border-t border-[#1c2540] px-4 md:px-6 py-3 font-data text-[10px] uppercase tracking-[0.18em] text-gray-600 flex items-center justify-between gap-3">
-          <span>// PALANTIR OBSERVATORY v0.1 — LOCAL NODE</span>
-          <span className="hidden sm:inline">
-            FEEDS ENCRYPTED · ON-DEVICE PROCESSING · NO CLOUD EGRESS
-          </span>
+          <span className="truncate">// PALANTIR OBSERVATORY v0.1 — LOCAL NODE</span>
+          <div className="flex items-center gap-3">
+            <span className="hidden sm:inline">
+              FEEDS ENCRYPTED · ON-DEVICE PROCESSING · NO CLOUD EGRESS
+            </span>
+            <button
+              onClick={powerCycle}
+              disabled={powerCycling || booting}
+              title="Power cycle display"
+              aria-label="Power cycle display"
+              className="inline-flex items-center gap-1 text-gray-600 hover:text-amber-400 disabled:opacity-40 transition-colors"
+            >
+              <Power className="w-3 h-3" />
+              <span>CYCLE</span>
+            </button>
+          </div>
         </footer>
       </div>
     </div>

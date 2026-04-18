@@ -155,23 +155,53 @@ body::before {
     }
   }
 
-  /* Horizontal scan line — used on panel headers */
+  /* Horizontal scan line — sweeps a narrow amber band across the full
+     width of its parent. Applied to an absolutely-positioned `inset-0`
+     element; uses background-position so travel is independent of width. */
   .scan-line {
-    background: linear-gradient(
+    background-image: linear-gradient(
       90deg,
       transparent 0%,
+      rgba(245, 158, 11, 0.15) 30%,
       var(--color-amber) 50%,
+      rgba(245, 158, 11, 0.15) 70%,
       transparent 100%
     );
+    background-size: 33% 100%;
+    background-repeat: no-repeat;
     animation: scan 3.5s linear infinite;
   }
 
   @keyframes scan {
     0% {
-      transform: translateX(-100%);
+      background-position: -33% 0;
     }
     100% {
-      transform: translateX(100%);
+      background-position: 133% 0;
+    }
+  }
+
+  /* Vertical scan sweep — for loading/scanning overlays */
+  .scan-sweep {
+    background-image: linear-gradient(
+      180deg,
+      transparent 0%,
+      rgba(34, 211, 238, 0.12) 45%,
+      rgba(34, 211, 238, 0.5) 50%,
+      rgba(34, 211, 238, 0.12) 55%,
+      transparent 100%
+    );
+    background-size: 100% 40%;
+    background-repeat: no-repeat;
+    animation: scan-sweep 2.4s linear infinite;
+  }
+
+  @keyframes scan-sweep {
+    0% {
+      background-position: 0 -40%;
+    }
+    100% {
+      background-position: 0 140%;
     }
   }
 
@@ -205,9 +235,14 @@ body::before {
     }
   }
 
-  /* CRT power-on */
+  /* CRT power-on — quick vertical expand with a white-ish brightness flash.
+     Used on modal/panel mount and (longer variant) on initial Layout mount. */
   .crt-on {
     animation: crt-on 0.6s var(--ease-out-expo) both;
+  }
+  .crt-on-lg {
+    animation: crt-on 0.9s var(--ease-out-expo) both;
+    transform-origin: center center;
   }
 
   @keyframes crt-on {
@@ -228,6 +263,161 @@ body::before {
     }
   }
 
+  /* CRT power-off — inverse of crt-on. Collapses to a horizontal line,
+     flashes bright, then shrinks to a dot and fades. */
+  .crt-off {
+    animation: crt-off 0.55s cubic-bezier(0.7, 0, 0.84, 0) both;
+    transform-origin: center center;
+  }
+
+  @keyframes crt-off {
+    0% {
+      opacity: 1;
+      transform: scale(1, 1);
+      filter: brightness(1);
+    }
+    40% {
+      opacity: 1;
+      transform: scale(1.01, 0.005);
+      filter: brightness(2.2);
+    }
+    80% {
+      opacity: 1;
+      transform: scale(0.2, 0.003);
+      filter: brightness(2.2);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(0, 0);
+      filter: brightness(0);
+    }
+  }
+
+  /* Amber flash overlay — pairs with crt-on for the "turn-on snap".
+     Normal variant ramps up then down; -in variant starts at peak (used
+     at the moment of handoff so there is no dark frame). */
+  .power-flash {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: rgba(251, 191, 36, 0.55);
+    animation: power-flash 0.55s ease-out forwards;
+  }
+  .power-flash-in {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: rgba(251, 191, 36, 0.55);
+    animation: power-flash-in 0.55s ease-out forwards;
+  }
+
+  @keyframes power-flash {
+    0% { opacity: 0; }
+    8% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+
+  @keyframes power-flash-in {
+    0% { opacity: 0.9; }
+    100% { opacity: 0; }
+  }
+
+  /* Decode-in — used for staggered entrance of page sections after login.
+     Slide up + fade + de-blur. Subtle; finishes in 450ms so the UI is
+     fully usable after ~half a second. */
+  .decode-in {
+    animation: decode-in 0.45s var(--ease-out-expo) both;
+  }
+
+  /* Page-in — lighter variant for route transitions (no blur, quick fade). */
+  .page-in {
+    animation: page-in 0.28s var(--ease-out-quart) both;
+  }
+
+  @keyframes page-in {
+    0% {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes decode-in {
+    0% {
+      opacity: 0;
+      transform: translateY(8px);
+      filter: blur(4px);
+    }
+    60% {
+      opacity: 1;
+      filter: blur(0);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+      filter: blur(0);
+    }
+  }
+
+  /* Stagger helper: apply to a container, children animate in sequence.
+     60ms between each, capped at 8 children so it never feels sluggish. */
+  .stagger-in > * {
+    animation: decode-in 0.45s var(--ease-out-expo) both;
+    animation-delay: calc(var(--stagger-base, 60ms) * var(--i, 0));
+  }
+  .stagger-in > *:nth-child(1) { --i: 0; }
+  .stagger-in > *:nth-child(2) { --i: 1; }
+  .stagger-in > *:nth-child(3) { --i: 2; }
+  .stagger-in > *:nth-child(4) { --i: 3; }
+  .stagger-in > *:nth-child(5) { --i: 4; }
+  .stagger-in > *:nth-child(6) { --i: 5; }
+  .stagger-in > *:nth-child(7) { --i: 6; }
+  .stagger-in > *:nth-child(8) { --i: 7; }
+
+  /* Subtle glitch — RGB-shift + tiny translate. Applied to key accent
+     elements. Triggers once every ~7s for ~140ms. Not harmful to reading. */
+  .glitch {
+    position: relative;
+    animation: glitch-cycle 7s steps(1, end) infinite;
+  }
+
+  @keyframes glitch-cycle {
+    0%, 96%, 100% {
+      transform: translate(0, 0);
+      text-shadow: none;
+      filter: none;
+    }
+    96.5% {
+      transform: translate(-1px, 0);
+      text-shadow:
+        1px 0 rgba(34, 211, 238, 0.8),
+        -1px 0 rgba(245, 158, 11, 0.8);
+    }
+    97% {
+      transform: translate(1px, 0);
+      text-shadow:
+        -1px 0 rgba(34, 211, 238, 0.8),
+        1px 0 rgba(245, 158, 11, 0.8);
+    }
+    97.5% {
+      transform: translate(0, -1px);
+      text-shadow:
+        0 1px rgba(34, 211, 238, 0.8),
+        0 -1px rgba(245, 158, 11, 0.8);
+      filter: brightness(1.4);
+    }
+    98% {
+      transform: translate(0, 0);
+      text-shadow: none;
+      filter: none;
+    }
+  }
+
   /* Type-on (for headers) */
   .type-on {
     overflow: hidden;
@@ -241,6 +431,20 @@ body::before {
     }
     to {
       width: 100%;
+    }
+  }
+
+  /* Blinking terminal caret */
+  .caret-blink::after {
+    content: "_";
+    margin-left: 2px;
+    animation: caret 1s steps(2) infinite;
+    color: var(--color-amber);
+  }
+
+  @keyframes caret {
+    50% {
+      opacity: 0;
     }
   }
 
@@ -335,7 +539,27 @@ textarea::placeholder {
   .pulse-dot,
   .breathe,
   .flicker,
-  .scan-line {
+  .scan-line,
+  .scan-sweep,
+  .glitch,
+  .caret-blink::after {
     animation: none !important;
+  }
+  /* Collapse CRT transitions to a plain fade so layout still animates
+     in, but no geometric distortion that could cause motion sickness. */
+  .crt-on,
+  .crt-on-lg,
+  .crt-off,
+  .decode-in,
+  .page-in,
+  .stagger-in > * {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+    filter: none !important;
+  }
+  .power-flash,
+  .power-flash-in {
+    display: none !important;
   }
 }

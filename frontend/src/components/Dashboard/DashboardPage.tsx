@@ -53,7 +53,7 @@ export default function DashboardPage() {
   const healthy = health?.status === "ok";
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 stagger-in">
       {/* ============== HEADLINE ============== */}
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
