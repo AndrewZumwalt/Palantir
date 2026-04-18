@@ -15,6 +15,18 @@ SERVICE_USER="palantir"
 SKIP_APT=0
 USE_FAKEREDIS=0
 
+# Resolve the repo root from this script's own location (scripts/ lives one
+# level below the project root). This makes the installer work regardless of
+# the user's current working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [ ! -f "$REPO_ROOT/pyproject.toml" ]; then
+    echo "Error: pyproject.toml not found at $REPO_ROOT."
+    echo "       Run this script from inside a checked-out Palantir repo."
+    exit 1
+fi
+
 for arg in "$@"; do
     case "$arg" in
         --skip-apt)       SKIP_APT=1 ;;
@@ -73,9 +85,18 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR"
 chmod 700 "$DATA_DIR/tls"
 
 # 4. Copy project files
-echo "[4/9] Copying project files..."
-cp -r . "$INSTALL_DIR/"
+echo "[4/9] Copying project files from $REPO_ROOT ..."
+# Use `cp -a <src>/.` so hidden files (.env.example location, etc.) are copied
+# and we don't depend on cwd.
+cp -a "$REPO_ROOT/." "$INSTALL_DIR/"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
+
+# Sanity check: pip install -e will explode without this.
+if [ ! -f "$INSTALL_DIR/pyproject.toml" ]; then
+    echo "Error: pyproject.toml missing from $INSTALL_DIR after copy."
+    echo "       Check that $REPO_ROOT is a full repo checkout."
+    exit 1
+fi
 
 # 5. Set up Python virtual environment
 echo "[5/9] Setting up Python environment..."

@@ -15,8 +15,8 @@ import structlog
 logger = structlog.get_logger()
 
 try:
-    import torch
-    import torchaudio
+    import torch  # noqa: F401  # required runtime dep for speechbrain
+    import torchaudio  # noqa: F401  # required runtime dep for speechbrain
     from speechbrain.inference.speaker import EncoderClassifier
 
     _SPEECHBRAIN_AVAILABLE = True

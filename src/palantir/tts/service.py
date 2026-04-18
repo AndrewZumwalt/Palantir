@@ -46,7 +46,7 @@ class TTSService:
         if not log_and_check(preflight, fatal_on_error=False):
             raise RuntimeError("tts preflight failed")
 
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._redis = await create_redis(self._config)
 
         privacy = await self._redis.get(Keys.PRIVACY_MODE)

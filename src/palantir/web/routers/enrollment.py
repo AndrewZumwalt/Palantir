@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from palantir.config import PalantirConfig
 from palantir.vision.face_detector import FaceDetector
-from palantir.vision.face_recognizer import FaceRecognizer, embedding_to_blob
+from palantir.vision.face_recognizer import FaceRecognizer
 from palantir.web.dependencies import get_config, get_db, verify_auth
 from palantir.web.rate_limit import rate_limit_enroll, rate_limit_read, rate_limit_write
 from palantir.web.validation import (
@@ -134,7 +134,9 @@ async def capture_face(
     Accepts a base64-encoded JPEG image, detects the face, extracts the
     embedding, and saves it. Returns the detection status.
     """
-    row = db.execute("SELECT id, name FROM persons WHERE id = ?", (person_id,)).fetchone()
+    row = db.execute(
+        "SELECT id, name, role FROM persons WHERE id = ?", (person_id,)
+    ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Person not found")
 
@@ -191,7 +193,7 @@ async def capture_face(
     return EnrollmentStatus(
         person_id=person_id,
         name=row["name"],
-        role="",
+        role=row["role"],
         face_samples=total_samples,
         required_samples=required,
         complete=complete,

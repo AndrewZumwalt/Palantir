@@ -6,7 +6,6 @@ Falls back to mock implementations on non-Pi hardware.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Callable
 
 import structlog

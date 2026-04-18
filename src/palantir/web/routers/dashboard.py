@@ -6,7 +6,7 @@ import sqlite3
 import time
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from palantir.redis_client import Keys
 from palantir.web.dependencies import get_db, get_redis, verify_auth
@@ -57,7 +57,7 @@ async def get_current_attendance(
 
 @router.get("/events/recent")
 async def get_recent_events(
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=500),
     db: sqlite3.Connection = Depends(get_db),
 ):
     """Get recent events from the log."""

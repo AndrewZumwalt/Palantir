@@ -83,7 +83,6 @@ async def get_engagement_heatmap(
 
     # Bucket into 1-minute intervals
     from collections import defaultdict
-    from datetime import datetime
 
     buckets: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     all_minutes: set[str] = set()

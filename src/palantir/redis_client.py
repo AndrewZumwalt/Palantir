@@ -71,13 +71,18 @@ async def create_redis(config: PalantirConfig) -> aioredis.Redis:
         logger.info("redis_connected", url="fakeredis://in-process")
         return r
 
+    r = aioredis.from_url(config.redis.url, decode_responses=True)
     try:
-        r = aioredis.from_url(config.redis.url, decode_responses=True)
         await r.ping()
         logger.info("redis_connected", url=config.redis.url)
         return r
     except (ConnectionError, OSError):
         logger.warning("redis_unix_socket_failed", url=config.redis.url)
+        # Free the half-open client before we try the fallback.
+        try:
+            await r.close()
+        except Exception:
+            logger.debug("redis_primary_close_failed", exc_info=True)
 
     r = aioredis.from_url(config.redis.fallback_url, decode_responses=True)
     await r.ping()

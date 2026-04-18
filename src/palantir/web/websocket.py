@@ -33,15 +33,24 @@ class WebSocketManager:
     async def broadcast(self, channel: str, data: dict) -> None:
         """Send a message to all connected WebSocket clients."""
         message = json.dumps({"channel": channel, "data": data})
+        # Snapshot under lock so connect/disconnect don't block on slow clients.
         async with self._lock:
-            stale = []
-            for ws in self._connections:
-                try:
-                    await ws.send_text(message)
-                except Exception:
-                    stale.append(ws)
-            for ws in stale:
-                self._connections.remove(ws)
+            targets = list(self._connections)
+        if not targets:
+            return
+
+        stale: list[WebSocket] = []
+        for ws in targets:
+            try:
+                await ws.send_text(message)
+            except Exception:
+                stale.append(ws)
+
+        if stale:
+            async with self._lock:
+                for ws in stale:
+                    if ws in self._connections:
+                        self._connections.remove(ws)
 
     @property
     def client_count(self) -> int:

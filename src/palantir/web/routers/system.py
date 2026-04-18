@@ -11,7 +11,6 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from palantir.config import PalantirConfig
-from palantir.redis_client import Keys
 from palantir.web.dependencies import get_config, get_db, get_redis, verify_auth
 from palantir.web.rate_limit import rate_limit_read, rate_limit_write
 

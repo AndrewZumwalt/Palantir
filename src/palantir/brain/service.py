@@ -78,7 +78,7 @@ class BrainService:
         if not log_and_check(preflight, fatal_on_error=False):
             raise RuntimeError("brain preflight failed")
 
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._redis = await create_redis(self._config)
         self._db = init_db(self._config)
 
@@ -149,24 +149,32 @@ class BrainService:
 
         # Check if audio service identified the speaker
         last_speaker = await self._redis.get("state:last_speaker")
+        parsed_speaker: dict | None = None
         if last_speaker:
-            parts = last_speaker.split(":", 2)
-            if len(parts) == 3:
-                raw_id, raw_name, raw_conf = parts
-                # Link voice identity to visual location
-                linked = await self._identity_linker.link(
-                    speaker_person_id=raw_id,
-                    speaker_name=raw_name,
-                    speaker_confidence=float(raw_conf),
-                )
-                speaker_id = linked.person_id
-                speaker_name = linked.name
-                logger.info(
-                    "identity_resolved",
-                    name=speaker_name,
-                    fully_linked=linked.fully_linked,
-                    location_source=linked.location_source,
-                )
+            try:
+                parsed_speaker = json.loads(last_speaker)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("last_speaker_parse_failed", raw=str(last_speaker)[:80])
+
+        if parsed_speaker:
+            # Link voice identity to visual location
+            try:
+                conf = float(parsed_speaker.get("confidence", 0.0))
+            except (TypeError, ValueError):
+                conf = 0.0
+            linked = await self._identity_linker.link(
+                speaker_person_id=parsed_speaker.get("person_id"),
+                speaker_name=parsed_speaker.get("name"),
+                speaker_confidence=conf,
+            )
+            speaker_id = linked.person_id
+            speaker_name = linked.name
+            logger.info(
+                "identity_resolved",
+                name=speaker_name,
+                fully_linked=linked.fully_linked,
+                location_source=linked.location_source,
+            )
         else:
             # No voice match - try inference from visible faces
             linked = await self._identity_linker.link(None, None, 0.0)

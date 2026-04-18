@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
@@ -127,7 +127,7 @@ class NetworkMonitor:
     async def _check_once(self) -> None:
         previous = self._online
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await asyncio.wait_for(
                 loop.run_in_executor(None, self._probe_tcp),
                 timeout=self._timeout,

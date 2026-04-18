@@ -5,9 +5,8 @@ This is the main entry point for the palantir-web systemd service.
 
 from __future__ import annotations
 
-import asyncio
 import json
-import signal
+import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -139,17 +138,18 @@ def create_app() -> FastAPI:
         # Optional auth check for WebSocket
         config: PalantirConfig = app.state.config
         if config.auth_token:
-            token = websocket.query_params.get("token")
-            if token != config.auth_token:
+            token = websocket.query_params.get("token") or ""
+            if not secrets.compare_digest(token, config.auth_token):
                 await websocket.close(code=4001, reason="Unauthorized")
                 return
 
         await manager.connect(websocket)
         try:
+            # Drain any inbound frames to keep the connection alive; we don't
+            # act on client->server messages today, but WebSocketDisconnect is
+            # only raised when we try to read.
             while True:
-                # Keep connection alive, handle client messages if needed
-                data = await websocket.receive_text()
-                # Future: handle client commands via WebSocket
+                await websocket.receive_text()
         except WebSocketDisconnect:
             await manager.disconnect(websocket)
 

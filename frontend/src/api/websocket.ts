@@ -48,7 +48,8 @@ function openSocket(): void {
 
   const token = getAuthToken();
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${protocol}//${window.location.host}/ws${token ? `?token=${token}` : ""}`;
+  const query = token ? `?token=${encodeURIComponent(token)}` : "";
+  const url = `${protocol}//${window.location.host}/ws${query}`;
 
   const next = new WebSocket(url);
   ws = next;

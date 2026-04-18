@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from palantir.web.dependencies import get_db, verify_auth
 from palantir.web.rate_limit import rate_limit_read
@@ -41,7 +41,7 @@ async def get_current_session(db: sqlite3.Connection = Depends(get_db)):
 
 @router.get("/history")
 async def get_session_history(
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=500),
     db: sqlite3.Connection = Depends(get_db),
 ):
     """Get past session summaries."""
@@ -63,7 +63,7 @@ async def get_session_detail(
     """Get detailed attendance for a specific session."""
     session = db.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
     if not session:
-        return {"error": "Session not found"}
+        raise HTTPException(status_code=404, detail="Session not found")
 
     records = db.execute(
         "SELECT a.*, p.name, p.role FROM attendance_records a "
@@ -81,7 +81,7 @@ async def get_session_detail(
 @router.get("/person/{person_id}")
 async def get_person_attendance(
     person_id: str,
-    limit: int = 30,
+    limit: int = Query(30, ge=1, le=500),
     db: sqlite3.Connection = Depends(get_db),
 ):
     """Get attendance history for a specific person."""

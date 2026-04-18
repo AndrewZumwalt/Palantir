@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import queue
-import threading
 from typing import Callable
 
 import numpy as np
@@ -48,7 +47,16 @@ class AudioCapture:
         try:
             self._thread_queue.put_nowait(audio_int16)
         except queue.Full:
-            pass  # Drop oldest data rather than blocking
+            # Drop the oldest chunk so the most recent audio is preserved;
+            # stale audio isn't useful for wake-word / STT.
+            try:
+                self._thread_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._thread_queue.put_nowait(audio_int16)
+            except queue.Full:
+                pass
 
     def start(self) -> None:
         """Start capturing audio from the microphone."""
@@ -81,10 +89,11 @@ class AudioCapture:
 
     async def run_dispatch_loop(self) -> None:
         """Async loop that pulls audio from the thread queue and dispatches to callbacks."""
+        loop = asyncio.get_running_loop()
         while self._running:
             try:
                 # Non-blocking poll with short sleep to keep async loop responsive
-                chunk = await asyncio.get_event_loop().run_in_executor(
+                chunk = await loop.run_in_executor(
                     None, lambda: self._thread_queue.get(timeout=0.1)
                 )
                 for callback in self._callbacks:

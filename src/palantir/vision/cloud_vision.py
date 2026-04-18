@@ -8,7 +8,6 @@ visual analysis than YOLO can provide (e.g., "where is the drill?",
 from __future__ import annotations
 
 import base64
-import io
 
 import cv2
 import numpy as np

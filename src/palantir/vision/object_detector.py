@@ -6,8 +6,6 @@ inventory of visible objects. Uses NCNN export for optimized Pi 5 inference.
 
 from __future__ import annotations
 
-import time
-
 import numpy as np
 import structlog
 

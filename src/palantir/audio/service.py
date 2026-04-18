@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
-from datetime import datetime
 
 import numpy as np
 import structlog
@@ -17,7 +16,6 @@ import structlog
 from palantir.config import load_config
 from palantir.db import init_db
 from palantir.logging import setup_logging
-from palantir.preflight import log_and_check, validate_for
 from palantir.models import (
     PrivacyModeEvent,
     ServiceStatus,
@@ -25,6 +23,7 @@ from palantir.models import (
     Utterance,
     WakeWordEvent,
 )
+from palantir.preflight import log_and_check, validate_for
 from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
 
 from .capture import AudioCapture
@@ -80,7 +79,7 @@ class AudioService:
         if not log_and_check(preflight, fatal_on_error=False):
             raise RuntimeError("audio preflight failed")
 
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._redis = await create_redis(self._config)
 
         # Check privacy mode
@@ -182,7 +181,8 @@ class AudioService:
             return
 
         # Run STT in executor to avoid blocking the event loop
-        text = await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(
             None, self._stt.transcribe, audio, self._config.audio.sample_rate
         )
 
@@ -197,7 +197,7 @@ class AudioService:
         # Extract speaker embedding (in parallel concept, but sequentially for CPU)
         speaker_embedding = None
         if self._speaker_id and self._speaker_id.is_available:
-            speaker_embedding = await asyncio.get_event_loop().run_in_executor(
+            speaker_embedding = await loop.run_in_executor(
                 None, self._speaker_id.extract_embedding, audio, self._config.audio.sample_rate
             )
 
@@ -241,11 +241,17 @@ class AudioService:
         )
         await publish(self._redis, Channels.AUDIO_UTTERANCE, utterance)
 
-        # Also publish speaker ID separately so brain can correlate
+        # Also publish speaker ID separately so brain can correlate.
+        # JSON-encode to stay robust against names that contain colons.
         if speaker_person_id:
+            import json as _json
             await self._redis.set(
                 "state:last_speaker",
-                f"{speaker_person_id}:{speaker_name}:{speaker_confidence}",
+                _json.dumps({
+                    "person_id": speaker_person_id,
+                    "name": speaker_name,
+                    "confidence": speaker_confidence,
+                }),
                 ex=30,  # Expires after 30 seconds
             )
 
@@ -286,6 +292,7 @@ class AudioService:
 
     async def run(self) -> None:
         await self.start()
+        dispatch_task: asyncio.Task | None = None
         try:
             if self._capture:
                 dispatch_task = asyncio.create_task(self._capture.run_dispatch_loop())
@@ -295,6 +302,12 @@ class AudioService:
         except asyncio.CancelledError:
             pass
         finally:
+            if dispatch_task is not None:
+                dispatch_task.cancel()
+                try:
+                    await dispatch_task
+                except (asyncio.CancelledError, Exception):
+                    pass
             await self.stop()
 
     async def stop(self) -> None:

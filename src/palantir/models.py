@@ -7,7 +7,6 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-
 # --- Identity ---
 
 class PersonRole(str, Enum):

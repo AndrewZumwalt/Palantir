@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import secrets
 import sqlite3
-from typing import AsyncGenerator
 
 import redis.asyncio as aioredis
 from fastapi import Depends, HTTPException, Request, Security
@@ -35,5 +35,7 @@ async def verify_auth(
         # No auth configured (development mode)
         return
 
-    if not credentials or credentials.credentials != config.auth_token:
+    if not credentials or not secrets.compare_digest(
+        credentials.credentials, config.auth_token
+    ):
         raise HTTPException(status_code=401, detail="Invalid or missing auth token")

@@ -7,7 +7,6 @@ matching to identify known people.
 from __future__ import annotations
 
 import sqlite3
-import struct
 from dataclasses import dataclass
 
 import numpy as np

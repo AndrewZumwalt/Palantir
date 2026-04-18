@@ -74,8 +74,8 @@ class IdentityConfig:
 
 @dataclass
 class LLMConfig:
-    default_model: str = "claude-haiku-4-5-20250301"
-    complex_model: str = "claude-sonnet-4-6-20250514"
+    default_model: str = "claude-haiku-4-5-20251001"
+    complex_model: str = "claude-sonnet-4-6"
     max_context_tokens: int = 4096
     enable_prompt_caching: bool = True
     temperature: float = 0.7

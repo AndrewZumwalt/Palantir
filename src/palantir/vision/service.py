@@ -9,14 +9,12 @@ import asyncio
 import json
 import signal
 import time
-from datetime import datetime
 
 import structlog
 
 from palantir.config import load_config
 from palantir.db import init_db
 from palantir.logging import setup_logging
-from palantir.preflight import log_and_check, validate_for
 from palantir.models import (
     DetectedFace,
     Event,
@@ -25,6 +23,7 @@ from palantir.models import (
     ServiceStatus,
     VisiblePerson,
 )
+from palantir.preflight import log_and_check, validate_for
 from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
 
 from .capture import CameraCapture
@@ -89,7 +88,7 @@ class VisionService:
         if not log_and_check(preflight, fatal_on_error=False):
             raise RuntimeError("vision preflight failed")
 
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._redis = await create_redis(self._config)
         self._db = init_db(self._config)
 
