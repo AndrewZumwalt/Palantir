@@ -27,6 +27,7 @@ from palantir.models import (
 )
 from palantir.preflight import log_and_check, validate_for
 from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
+from palantir.reload import handle_reload_request
 from palantir.resilience import NetworkMonitor
 
 from .actuator import Actuator
@@ -128,6 +129,7 @@ class BrainService:
         self._subscriber.on(Channels.SYSTEM_PRIVACY, self._on_privacy_toggle)
         self._subscriber.on(Channels.AUDIO_UTTERANCE, self._on_utterance)
         self._subscriber.on(Channels.EVENTS_LOG, self._on_event_for_automation)
+        self._subscriber.on(Channels.SYSTEM_RELOAD, self._on_reload)
         await self._subscriber.start()
 
         self._running = True
@@ -420,6 +422,25 @@ class BrainService:
         event = PrivacyModeEvent(**data)
         self._privacy_mode = event.enabled
         logger.info("brain_privacy_mode", enabled=event.enabled)
+
+    async def _on_reload(self, data: dict) -> None:
+        """Soft-reload: reset LLM circuit breaker + reload automation rules.
+
+        The circuit breaker can latch open after a transient API outage. A
+        soft reload lets the user clear it without waiting for the timeout,
+        and also picks up automation rules edited in the UI.
+        """
+        async def _do() -> None:
+            # Force the LLM circuit breaker back to CLOSED so the next call
+            # actually tries the API instead of fast-failing.
+            if self._llm and hasattr(self._llm, "_breaker"):
+                self._llm._breaker.record_success()  # noqa: SLF001
+            # Reload the identity linker's stale-timeout bookkeeping.
+            if self._identity_linker and hasattr(self._identity_linker, "reset"):
+                self._identity_linker.reset()
+            await self._publish_status(healthy=True)
+
+        await handle_reload_request(self._redis, "brain", data, _do)
 
     async def _publish_status(self, healthy: bool) -> None:
         status = ServiceStatus(

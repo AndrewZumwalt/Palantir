@@ -25,6 +25,7 @@ from palantir.models import (
 )
 from palantir.preflight import log_and_check, validate_for
 from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
+from palantir.reload import handle_reload_request
 
 from .capture import AudioCapture
 from .stt import SpeechToText
@@ -89,6 +90,7 @@ class AudioService:
         # Redis subscriber
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.SYSTEM_PRIVACY, self._on_privacy_toggle)
+        self._subscriber.on(Channels.SYSTEM_RELOAD, self._on_reload)
         await self._subscriber.start()
 
         # Initialize pipeline components
@@ -274,6 +276,31 @@ class AudioService:
             if self._capture and not self._capture.is_running:
                 self._capture.start()
             logger.info("audio_privacy_mode_disabled")
+
+    async def _on_reload(self, data: dict) -> None:
+        """Soft-reload: reset wake-word detector, VAD, and bounce capture.
+
+        The mic can get wedged into a no-wake-word state if background noise
+        re-triggers detection partially; resetting the detector + cancelling
+        any in-progress VAD recovers without a systemd restart.
+        """
+        async def _do() -> None:
+            if self._wake_word:
+                self._wake_word.reset()
+            if self._vad:
+                self._vad.cancel()
+            self._listening_for_utterance = False
+            if self._capture and not self._privacy_mode:
+                try:
+                    self._capture.stop()
+                except Exception:
+                    logger.debug("audio_stop_during_reload_failed", exc_info=True)
+                self._capture = AudioCapture(self._config.audio)
+                self._capture.add_callback(self._on_audio_chunk)
+                self._capture.start()
+            await self._publish_status(healthy=True)
+
+        await handle_reload_request(self._redis, "audio", data, _do)
 
     async def _publish_status(self, healthy: bool) -> None:
         status = ServiceStatus(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 import time
 
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from palantir.config import PalantirConfig
+from palantir.redis_client import Channels, publish
 from palantir.web.dependencies import get_config, get_db, get_redis, verify_auth
 from palantir.web.rate_limit import rate_limit_read, rate_limit_write
 
@@ -127,6 +129,56 @@ async def get_stats(db: sqlite3.Connection = Depends(get_db)):
             "SELECT COUNT(*) as c FROM conversations"
         ).fetchone()["c"],
     }
+
+
+class ReloadRequest(BaseModel):
+    # Which services to reload. Empty list => all reloadable services.
+    services: list[str] = []
+
+
+# Services that respond to soft-reload requests. `web` is deliberately
+# excluded — it reloads itself implicitly whenever the browser tab refreshes,
+# and restarting it mid-request would drop the caller's connection.
+RELOADABLE_SERVICES = ["audio", "vision", "brain", "tts", "eventlog"]
+
+
+@router.post("/reload", dependencies=[Depends(rate_limit_write)])
+async def reload_services(
+    req: ReloadRequest,
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    """Soft-reload backend services in-place.
+
+    Publishes a SYSTEM_RELOAD request with a unique reload_id. Each service
+    reports progress via SYSTEM_RELOAD_PROGRESS, which the web service bridges
+    to the frontend over WebSocket. This is the backing endpoint for the UI
+    "power cycle" button — it rebuilds model state and clears caches without
+    actually restarting the systemd units (which would drop this request).
+    """
+    targets = req.services or list(RELOADABLE_SERVICES)
+    # Filter unknown names so a typo can't hang the UI forever.
+    targets = [s for s in targets if s in RELOADABLE_SERVICES]
+    reload_id = secrets.token_hex(8)
+
+    await publish(
+        redis,
+        Channels.SYSTEM_RELOAD,
+        {"reload_id": reload_id, "services": targets},
+    )
+    # Emit a synthetic "requested" event so the UI can show each target as
+    # pending even before the service's own handler fires.
+    for name in targets:
+        await publish(
+            redis,
+            Channels.SYSTEM_RELOAD_PROGRESS,
+            {
+                "reload_id": reload_id,
+                "service": name,
+                "status": "pending",
+                "message": "reload requested",
+            },
+        )
+    return {"reload_id": reload_id, "services": targets}
 
 
 @router.get("/persons", dependencies=[Depends(rate_limit_read)])

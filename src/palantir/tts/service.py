@@ -17,6 +17,7 @@ from palantir.logging import setup_logging
 from palantir.models import AssistantResponse, PrivacyModeEvent, ServiceStatus
 from palantir.preflight import log_and_check, validate_for
 from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
+from palantir.reload import handle_reload_request
 
 from .audio_output import AudioOutput
 from .piper_engine import PiperEngine
@@ -60,6 +61,7 @@ class TTSService:
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.BRAIN_RESPONSE, self._on_response)
         self._subscriber.on(Channels.SYSTEM_PRIVACY, self._on_privacy_toggle)
+        self._subscriber.on(Channels.SYSTEM_RELOAD, self._on_reload)
         await self._subscriber.start()
 
         self._running = True
@@ -110,6 +112,28 @@ class TTSService:
             if self._output:
                 self._output.stop()
         logger.info("tts_privacy_mode", enabled=event.enabled)
+
+    async def _on_reload(self, data: dict) -> None:
+        """Soft-reload: flush the speech queue and stop any current playback.
+
+        Main failure mode here is a stuck playback that won't release the
+        audio device; dropping the queue and calling stop() on the output
+        recovers without a systemd restart.
+        """
+        async def _do() -> None:
+            while not self._speech_queue.empty():
+                try:
+                    self._speech_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            if self._output:
+                try:
+                    self._output.stop()
+                except Exception:
+                    logger.debug("tts_stop_during_reload_failed", exc_info=True)
+            await self._publish_status(healthy=True)
+
+        await handle_reload_request(self._redis, "tts", data, _do)
 
     async def _publish_status(self, healthy: bool) -> None:
         status = ServiceStatus(

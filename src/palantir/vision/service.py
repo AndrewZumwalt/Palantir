@@ -25,6 +25,7 @@ from palantir.models import (
 )
 from palantir.preflight import log_and_check, validate_for
 from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
+from palantir.reload import handle_reload_request
 
 from .capture import CameraCapture
 
@@ -134,6 +135,7 @@ class VisionService:
         # Subscribe to events
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.SYSTEM_PRIVACY, self._on_privacy_toggle)
+        self._subscriber.on(Channels.SYSTEM_RELOAD, self._on_reload)
         await self._subscriber.start()
 
         # Start camera
@@ -354,6 +356,38 @@ class VisionService:
             if self._camera and not self._camera.is_running:
                 self._camera.start()
             logger.info("vision_privacy_mode_disabled")
+
+    async def _on_reload(self, data: dict) -> None:
+        """Rebuild model/camera state in-place when a reload is requested.
+
+        This is the "soft-restart" path: we don't exit the process (systemd
+        would drop pending work), we just drop and recreate the stateful
+        resources that go stale — face enrollments, the camera handle, and
+        the engagement classifier's sliding window. Callers drive this via
+        POST /api/system/reload.
+        """
+        async def _do() -> None:
+            # Re-load face enrollments from disk so newly-added persons are
+            # picked up without a restart.
+            if self._face_recognizer:
+                self._face_recognizer.reload_profiles()
+            # Reset engagement smoothing window — stale pose history causes
+            # "stuck" engagement states after misclassifications.
+            if self._engagement_classifier and hasattr(
+                self._engagement_classifier, "reset"
+            ):
+                self._engagement_classifier.reset()
+            # Bounce the camera (cheapest way to clear a wedged v4l2 handle).
+            if self._camera and not self._privacy_mode:
+                try:
+                    self._camera.stop()
+                except Exception:
+                    logger.debug("camera_stop_during_reload_failed", exc_info=True)
+                self._camera = CameraCapture(self._config.camera)
+                self._camera.start()
+            await self._publish_status(healthy=True)
+
+        await handle_reload_request(self._redis, "vision", data, _do)
 
     async def _publish_status(self, healthy: bool) -> None:
         status = ServiceStatus(

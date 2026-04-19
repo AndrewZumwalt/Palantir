@@ -19,10 +19,16 @@ import {
 import type { ComponentType } from "react";
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { clearAuthToken } from "../api/client";
+import { api, clearAuthToken } from "../api/client";
 import { JUST_AUTHED_FLAG } from "./AuthGate";
+import { ReloadOverlay } from "./ReloadOverlay";
 import { LiveIndicator } from "./ui/LiveIndicator";
 import { StatusPill } from "./ui/StatusPill";
+
+interface ActiveReload {
+  reload_id: string;
+  services: string[];
+}
 
 interface NavItem {
   to: string;
@@ -137,6 +143,9 @@ export default function Layout() {
   // in-app power-cycle easter egg.
   const [flashHandoff, setFlashHandoff] = useState(false);
   const [flashRamp, setFlashRamp] = useState(false);
+  // When a power-cycle request is in flight, this holds the server-issued
+  // reload_id + target services so <ReloadOverlay/> can show live progress.
+  const [activeReload, setActiveReload] = useState<ActiveReload | null>(null);
   const now = useClock();
 
   const active = NAV.find(
@@ -168,14 +177,28 @@ export default function Layout() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Power-cycle easter egg — CRT-off, flash, CRT-on.
-  const powerCycle = () => {
-    if (powerCycling || booting) return;
+  // Power cycle: kick off a server-side soft-reload of the backend services
+  // (vision/audio/brain/tts/eventlog) and play the CRT animation at the same
+  // time so the visual matches the real thing happening on the Pi. The
+  // ReloadOverlay shows per-service progress as each one reports in via
+  // WebSocket. If the API call fails we still run the CRT animation so the
+  // button doesn't feel broken when offline — but we surface the error.
+  const powerCycle = async () => {
+    if (powerCycling || booting || activeReload) return;
     setPowerCycling(true);
+    // Fire-and-wait the reload request before starting the CRT-off so the
+    // overlay appears right as the screen comes back on.
+    let reload: ActiveReload | null = null;
+    try {
+      reload = await api.post<ActiveReload>("/system/reload", { services: [] });
+    } catch (err) {
+      console.error("reload_request_failed", err);
+    }
     setTimeout(() => {
       setFlashRamp(true);
       setPowerCycling(false);
       setBooting(true);
+      if (reload) setActiveReload(reload);
       setTimeout(() => setFlashRamp(false), 700);
       setTimeout(() => setBooting(false), 1650);
     }, 520);
@@ -191,6 +214,13 @@ export default function Layout() {
     <div className={["min-h-dvh flex", rootAnim].filter(Boolean).join(" ")}>
       {flashHandoff && <div className="power-flash-in" aria-hidden="true" />}
       {flashRamp && <div className="power-flash" aria-hidden="true" />}
+      {activeReload && (
+        <ReloadOverlay
+          reloadId={activeReload.reload_id}
+          services={activeReload.services}
+          onFinished={() => setActiveReload(null)}
+        />
+      )}
 
       {/* ===== SIDEBAR ===== */}
       <aside
@@ -429,9 +459,9 @@ export default function Layout() {
             </span>
             <button
               onClick={powerCycle}
-              disabled={powerCycling || booting}
-              title="Power cycle display"
-              aria-label="Power cycle display"
+              disabled={powerCycling || booting || activeReload !== null}
+              title="Power cycle: reload vision/audio/brain/tts/eventlog"
+              aria-label="Power cycle: reload backend services"
               className="inline-flex items-center gap-1 text-gray-600 hover:text-amber-400 disabled:opacity-40 transition-colors"
             >
               <Power className="w-3 h-3" />

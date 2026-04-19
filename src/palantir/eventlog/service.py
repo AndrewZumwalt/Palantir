@@ -18,6 +18,7 @@ from palantir.logging import setup_logging
 from palantir.models import Event, ServiceStatus
 from palantir.preflight import log_and_check, validate_for
 from palantir.redis_client import Channels, Subscriber, create_redis, publish
+from palantir.reload import handle_reload_request
 
 from .aggregator import EngagementAggregator
 
@@ -50,6 +51,7 @@ class EventLogService:
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.EVENTS_LOG, self._on_event)
         self._subscriber.on(Channels.VISION_ENGAGEMENT, self._on_engagement)
+        self._subscriber.on(Channels.SYSTEM_RELOAD, self._on_reload)
         await self._subscriber.start()
 
         self._running = True
@@ -108,6 +110,18 @@ class EventLogService:
         )
         self._db.commit()
         logger.info("retention_cleanup_complete", retention_days=retention_days)
+
+    async def _on_reload(self, data: dict) -> None:
+        """Soft-reload: run retention cleanup immediately.
+
+        Cheapest useful thing this service can do on demand — catches up on
+        cleanup that would otherwise wait for the hourly timer.
+        """
+        async def _do() -> None:
+            await self._run_retention_cleanup()
+            await self._publish_status(healthy=True)
+
+        await handle_reload_request(self._redis, "eventlog", data, _do)
 
     async def _publish_status(self, healthy: bool) -> None:
         status = ServiceStatus(

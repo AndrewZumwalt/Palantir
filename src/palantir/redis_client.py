@@ -33,6 +33,8 @@ class Channels:
     EVENTS_LOG = "events:log"
     SYSTEM_PRIVACY = "system:privacy"
     SYSTEM_STATUS = "system:status"
+    SYSTEM_RELOAD = "system:reload"
+    SYSTEM_RELOAD_PROGRESS = "system:reload:progress"
 
 
 # Redis key names for ephemeral state

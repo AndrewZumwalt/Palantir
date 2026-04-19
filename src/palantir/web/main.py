@@ -63,6 +63,7 @@ async def lifespan(app: FastAPI):
         Channels.VISION_ENGAGEMENT,
         Channels.SYSTEM_STATUS,
         Channels.SYSTEM_PRIVACY,
+        Channels.SYSTEM_RELOAD_PROGRESS,
         Channels.EVENTS_LOG,
     ]
     for channel in bridge_channels:
