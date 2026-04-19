@@ -57,7 +57,8 @@ if [ "$SKIP_APT" = "0" ]; then
         libhdf5-dev \
         libssl-dev \
         ufw \
-        git
+        git \
+        nodejs npm
 else
     echo "[1/9] Skipping apt-get (--skip-apt).  Ensure python3-venv is available."
     python3 -m venv --version > /dev/null 2>&1 || {
@@ -110,11 +111,49 @@ sudo -u "$SERVICE_USER" "$INSTALL_DIR/.venv/bin/pip" install -e "$INSTALL_DIR"
 #   pip install -e ".[objects]" # Phase 5
 #   pip install -e ".[ml]"     # All at once
 
+# 5b. Build the frontend SPA. The web service mounts frontend/dist at "/"
+# when the directory exists; without this step, `/` returns 404 even though
+# /api/* works fine — classic "the install said success but the site is
+# broken" failure mode. Best-effort: if npm is missing or the build fails
+# we log a warning and continue, because the API is still usable.
+echo "[5b/9] Building frontend..."
+if command -v npm >/dev/null 2>&1; then
+    if [ -f "$INSTALL_DIR/frontend/package.json" ]; then
+        # Use npm ci when a lockfile is present (reproducible); otherwise
+        # fall back to npm install. Run as the service user so the resulting
+        # node_modules/ and dist/ are owned correctly.
+        if [ -f "$INSTALL_DIR/frontend/package-lock.json" ]; then
+            sudo -u "$SERVICE_USER" bash -c \
+                "cd '$INSTALL_DIR/frontend' && npm ci --no-audit --no-fund" \
+                || sudo -u "$SERVICE_USER" bash -c \
+                    "cd '$INSTALL_DIR/frontend' && npm install --no-audit --no-fund"
+        else
+            sudo -u "$SERVICE_USER" bash -c \
+                "cd '$INSTALL_DIR/frontend' && npm install --no-audit --no-fund"
+        fi
+        sudo -u "$SERVICE_USER" bash -c \
+            "cd '$INSTALL_DIR/frontend' && npm run build" \
+            && echo "  Frontend built to $INSTALL_DIR/frontend/dist" \
+            || echo "  WARNING: frontend build failed — API will work but / will 404"
+    else
+        echo "  No frontend/package.json found — skipping"
+    fi
+else
+    echo "  WARNING: npm not installed — skipping frontend build."
+    echo "           Install nodejs+npm and run 'cd $INSTALL_DIR/frontend && npm ci && npm run build'"
+fi
+
 # 6. Generate auth token and .env
+# On a fresh install we mint a new token and write it into .env. On
+# re-runs we keep the existing .env (users may have customized it) but
+# extract whatever token is already stored so we can show it at the end.
+# Previously this always generated a fresh token and echoed it even when
+# .env was untouched — users would paste a token that wasn't actually in
+# the file, and auth would silently fail.
 echo "[6/9] Generating configuration..."
-AUTH_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
 
 if [ ! -f "$INSTALL_DIR/.env" ]; then
+    AUTH_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
     cp "$INSTALL_DIR/config/.env.example" "$INSTALL_DIR/.env"
     sed -i "s|PALANTIR_AUTH_TOKEN=|PALANTIR_AUTH_TOKEN=$AUTH_TOKEN|" "$INSTALL_DIR/.env"
     echo "PALANTIR_ENV=production" >> "$INSTALL_DIR/.env"
@@ -126,6 +165,21 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/.env"
     echo "  Auth token: $AUTH_TOKEN"
     echo "  (Save this token - you'll need it to access the web UI)"
+else
+    # Read the existing token so the summary at the end is accurate.
+    AUTH_TOKEN=$(grep '^PALANTIR_AUTH_TOKEN=' "$INSTALL_DIR/.env" | cut -d= -f2- || true)
+    if [ -z "$AUTH_TOKEN" ]; then
+        # .env exists but has no token (partial install) — mint one.
+        AUTH_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+        if grep -q '^PALANTIR_AUTH_TOKEN=' "$INSTALL_DIR/.env"; then
+            sed -i "s|^PALANTIR_AUTH_TOKEN=.*|PALANTIR_AUTH_TOKEN=$AUTH_TOKEN|" "$INSTALL_DIR/.env"
+        else
+            echo "PALANTIR_AUTH_TOKEN=$AUTH_TOKEN" >> "$INSTALL_DIR/.env"
+        fi
+        echo "  Minted missing auth token: $AUTH_TOKEN"
+    else
+        echo "  Using existing auth token from $INSTALL_DIR/.env"
+    fi
 fi
 
 # 7. Install systemd services + timers
