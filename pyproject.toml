@@ -55,6 +55,18 @@ objects = [
 ml = [
     "palantir[voice,face,speaker,objects]",
 ]
+# Pi-side relay client.  Intentionally minimal: just enough to capture
+# mic/cam, talk a WebSocket, and play back PCM.  No ML deps — runs on
+# Pi 3B / Trixie / Python 3.13 without compiling anything.
+relay-pi = [
+    "websockets>=14.0",
+    "sounddevice>=0.5.0",
+    "numpy>=1.26.0",
+    "opencv-python-headless>=4.10.0",
+    "gpiozero>=2.0.0",
+    "structlog>=24.0.0",
+    "python-dotenv>=1.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
@@ -72,6 +84,7 @@ palantir-tts = "palantir.tts.service:main"
 palantir-eventlog = "palantir.eventlog.service:main"
 palantir-web = "palantir.web.main:main"
 palantir-backup = "palantir.backup:main"
+palantir-pi-relay = "palantir.relay.pi_client:main"
 
 [build-system]
 requires = ["hatchling"]

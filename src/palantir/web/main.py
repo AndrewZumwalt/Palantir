@@ -5,6 +5,7 @@ This is the main entry point for the palantir-web systemd service.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import time
@@ -21,7 +22,13 @@ from palantir.config import PalantirConfig, load_config
 from palantir.db import init_db
 from palantir.logging import setup_logging
 from palantir.preflight import log_and_check, validate_for
-from palantir.redis_client import Channels, Subscriber, create_redis
+from palantir.redis_client import (
+    Channels,
+    Subscriber,
+    create_binary_redis,
+    create_redis,
+)
+from palantir.relay.protocol import Frame, Op
 
 from .routers import (
     attendance,
@@ -48,13 +55,21 @@ async def lifespan(app: FastAPI):
     log_and_check(preflight, fatal_on_error=False)
 
     redis = await create_redis(config)
+    # Second client for binary relay channels (PCM, JPEG); only used by
+    # /relay/ws — but always created so the endpoint doesn't have to lazy-
+    # initialise on first connect.
+    binary_redis = await create_binary_redis(config)
     db = init_db(config)
 
     app.state.config = config
     app.state.redis = redis
+    app.state.binary_redis = binary_redis
     app.state.db = db
     app.state.ws_manager = WebSocketManager()
     app.state.start_time = time.monotonic()
+    # At most one Pi may be connected at a time.  Stored as a WebSocket
+    # so a duplicate connection attempt can see the existing one.
+    app.state.relay_pi: WebSocket | None = None
 
     # Bridge Redis Pub/Sub to WebSocket clients
     subscriber = Subscriber(redis)
@@ -91,6 +106,10 @@ async def lifespan(app: FastAPI):
     await subscriber.stop()
     db.close()
     await redis.close()
+    try:
+        await binary_redis.close()
+    except Exception:
+        logger.debug("binary_redis_close_failed", exc_info=True)
     logger.info("web_service_stopped")
 
 
@@ -153,6 +172,193 @@ def create_app() -> FastAPI:
                 await websocket.receive_text()
         except WebSocketDisconnect:
             await manager.disconnect(websocket)
+
+    # Pi <-> laptop relay endpoint.  The Pi opens this WebSocket and pumps
+    # mic + camera frames; we publish them to Redis so the audio + vision
+    # services pick them up unchanged.  TTS audio + hardware commands flow
+    # the other direction.
+    @app.websocket("/relay/ws")
+    async def relay_endpoint(websocket: WebSocket):
+        config: PalantirConfig = app.state.config
+
+        # Auth: same bearer token as the dashboard WS
+        if config.auth_token:
+            token = websocket.query_params.get("token") or ""
+            if not secrets.compare_digest(token, config.auth_token):
+                await websocket.close(code=4001, reason="Unauthorized")
+                return
+
+        # One Pi at a time.  Any prior connection is kicked.
+        prior = getattr(app.state, "relay_pi", None)
+        if prior is not None:
+            try:
+                await prior.close(code=4000, reason="superseded")
+            except Exception:
+                pass
+
+        await websocket.accept()
+        app.state.relay_pi = websocket
+        text_redis = app.state.redis
+        bin_redis = app.state.binary_redis
+
+        # Announce that the Pi is online so the dashboard can react.
+        try:
+            await text_redis.publish(
+                Channels.RELAY_STATUS, json.dumps({"connected": True})
+            )
+        except Exception:
+            logger.debug("relay_status_publish_failed", exc_info=True)
+        logger.info("relay_pi_connected", client=str(websocket.client))
+
+        # Reverse direction: Redis -> Pi.  Two subscribers — one binary
+        # for synthesized PCM, one text for hardware commands.
+        async def forward_audio_out() -> None:
+            pubsub = bin_redis.pubsub()
+            await pubsub.subscribe(Channels.RELAY_AUDIO_OUT)
+            try:
+                async for msg in pubsub.listen():
+                    if msg.get("type") != "message":
+                        continue
+                    data = msg.get("data")
+                    if isinstance(data, (bytes, bytearray)):
+                        await websocket.send_bytes(
+                            Frame(Op.AUDIO_OUT, bytes(data)).encode()
+                        )
+            except (asyncio.CancelledError, WebSocketDisconnect):
+                pass
+            except Exception:
+                logger.debug("relay_audio_out_forward_failed", exc_info=True)
+            finally:
+                try:
+                    await pubsub.unsubscribe(Channels.RELAY_AUDIO_OUT)
+                    await pubsub.close()
+                except Exception:
+                    logger.debug("audio_out_pubsub_close_failed", exc_info=True)
+
+        async def forward_hardware_cmd() -> None:
+            pubsub = text_redis.pubsub()
+            await pubsub.subscribe(Channels.RELAY_HARDWARE_CMD)
+            try:
+                async for msg in pubsub.listen():
+                    if msg.get("type") != "message":
+                        continue
+                    raw = msg.get("data")
+                    if not isinstance(raw, str):
+                        continue
+                    try:
+                        cmd = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    kind = cmd.get("kind")
+                    if kind == "led":
+                        await websocket.send_bytes(
+                            Frame.led(
+                                float(cmd.get("r", 0.0)),
+                                float(cmd.get("g", 0.0)),
+                                float(cmd.get("b", 0.0)),
+                            ).encode()
+                        )
+                    elif kind == "relay":
+                        await websocket.send_bytes(
+                            Frame.relay(
+                                int(cmd["pin"]), bool(cmd.get("state", False))
+                            ).encode()
+                        )
+            except (asyncio.CancelledError, WebSocketDisconnect):
+                pass
+            except Exception:
+                logger.debug("relay_hardware_forward_failed", exc_info=True)
+            finally:
+                try:
+                    await pubsub.unsubscribe(Channels.RELAY_HARDWARE_CMD)
+                    await pubsub.close()
+                except Exception:
+                    logger.debug("hardware_pubsub_close_failed", exc_info=True)
+
+        forward_tasks = [
+            asyncio.create_task(forward_audio_out()),
+            asyncio.create_task(forward_hardware_cmd()),
+        ]
+
+        # Forward direction: Pi -> Redis.  Loop until disconnect.
+        try:
+            while True:
+                message = await websocket.receive_bytes()
+                try:
+                    frame = Frame.decode(message)
+                except ValueError:
+                    logger.debug("relay_bad_frame", size=len(message))
+                    continue
+
+                if frame.op == Op.AUDIO_IN:
+                    # PCM bytes — publish straight through.
+                    await text_redis.publish(Channels.RELAY_AUDIO_IN, frame.payload)
+                elif frame.op == Op.VIDEO_FRAME:
+                    await text_redis.publish(
+                        Channels.RELAY_VIDEO_FRAME, frame.payload
+                    )
+                elif frame.op == Op.GPIO_EVENT:
+                    try:
+                        evt = frame.json()
+                    except Exception:
+                        continue
+                    # Privacy switch is the only GPIO event that today has
+                    # a system-wide effect — fan it out on SYSTEM_PRIVACY
+                    # so the audio/vision services react.  Everything else
+                    # goes onto RELAY_GPIO for whoever wants it.
+                    if evt.get("event") == "privacy" and "state" in evt:
+                        enabled = bool(evt["state"])
+                        await text_redis.set(
+                            "state:privacy_mode", "1" if enabled else "0"
+                        )
+                        await text_redis.publish(
+                            Channels.SYSTEM_PRIVACY,
+                            json.dumps({"enabled": enabled}),
+                        )
+                    else:
+                        await text_redis.publish(
+                            Channels.RELAY_GPIO, json.dumps(evt)
+                        )
+                elif frame.op == Op.HELLO:
+                    try:
+                        info = frame.json()
+                    except Exception:
+                        info = {}
+                    logger.info(
+                        "relay_pi_hello",
+                        version=info.get("version"),
+                        hostname=info.get("hostname"),
+                    )
+                elif frame.op == Op.PING:
+                    pass
+                elif frame.op == Op.ERROR:
+                    try:
+                        info = frame.json()
+                    except Exception:
+                        info = {}
+                    logger.warning("relay_pi_error", **info)
+                else:
+                    logger.debug("relay_unhandled_op", op=int(frame.op))
+        except WebSocketDisconnect:
+            logger.info("relay_pi_disconnected")
+        except Exception:
+            logger.exception("relay_endpoint_error")
+        finally:
+            for t in forward_tasks:
+                t.cancel()
+            for t in forward_tasks:
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if app.state.relay_pi is websocket:
+                app.state.relay_pi = None
+            try:
+                await text_redis.publish(
+                    Channels.RELAY_STATUS, json.dumps({"connected": False})
+                )
+            except Exception:
+                logger.debug("relay_status_publish_failed", exc_info=True)
 
     # Serve frontend SPA (production build)
     if FRONTEND_DIST.exists():

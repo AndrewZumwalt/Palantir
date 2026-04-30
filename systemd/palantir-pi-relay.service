@@ -1,0 +1,28 @@
+[Unit]
+Description=Palantir Pi relay (mic + camera + speaker bridge to laptop)
+# No Redis dep — the Pi only opens a WebSocket to the laptop.
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=palantir
+Group=palantir
+WorkingDirectory=/opt/palantir
+EnvironmentFile=/opt/palantir/.env
+# `--insecure` is automatically appended below when the .env requests it,
+# but keeping it on by default is the right call for a self-signed cert
+# on the laptop side; flip via PALANTIR_RELAY_INSECURE in .env.
+ExecStart=/opt/palantir/.venv/bin/palantir-pi-relay --insecure
+Restart=always
+RestartSec=5
+Nice=10
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+# Allow access to the camera + audio devices.
+SupplementaryGroups=audio video gpio
+
+[Install]
+WantedBy=multi-user.target

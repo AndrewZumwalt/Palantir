@@ -24,10 +24,17 @@ from palantir.models import (
     WakeWordEvent,
 )
 from palantir.preflight import log_and_check, validate_for
-from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
+from palantir.redis_client import (
+    Channels,
+    Keys,
+    Subscriber,
+    create_binary_redis,
+    create_redis,
+    publish,
+)
 from palantir.reload import handle_reload_request
 
-from .capture import AudioCapture
+from .capture import AudioCapture, create_audio_capture
 from .stt import SpeechToText
 from .wake_word import WakeWordDetector
 
@@ -57,6 +64,7 @@ class AudioService:
         self._config = load_config()
         self._capture: AudioCapture | None = None
         self._redis = None
+        self._binary_redis = None  # only created in relay mode
         self._subscriber: Subscriber | None = None
         self._privacy_mode = False
         self._running = False
@@ -120,8 +128,15 @@ class AudioService:
                 match_threshold=self._config.identity.voice_match_threshold,
             )
 
-        # Start audio capture
-        self._capture = AudioCapture(self._config.audio)
+        # Start audio capture (local mic OR Pi relay over Redis)
+        relay_mode = self._config.relay.mode == "relay"
+        if relay_mode and self._binary_redis is None:
+            self._binary_redis = await create_binary_redis(self._config)
+        self._capture = create_audio_capture(
+            self._config.audio,
+            relay_mode=relay_mode,
+            binary_redis=self._binary_redis,
+        )
         self._capture.add_callback(self._on_audio_chunk)
 
         if not self._privacy_mode:
@@ -295,7 +310,14 @@ class AudioService:
                     self._capture.stop()
                 except Exception:
                     logger.debug("audio_stop_during_reload_failed", exc_info=True)
-                self._capture = AudioCapture(self._config.audio)
+                relay_mode = self._config.relay.mode == "relay"
+                if relay_mode and self._binary_redis is None:
+                    self._binary_redis = await create_binary_redis(self._config)
+                self._capture = create_audio_capture(
+                    self._config.audio,
+                    relay_mode=relay_mode,
+                    binary_redis=self._binary_redis,
+                )
                 self._capture.add_callback(self._on_audio_chunk)
                 self._capture.start()
             await self._publish_status(healthy=True)
@@ -345,6 +367,11 @@ class AudioService:
             await self._subscriber.stop()
         if self._redis:
             await self._redis.close()
+        if self._binary_redis:
+            try:
+                await self._binary_redis.close()
+            except Exception:
+                logger.debug("binary_redis_close_failed", exc_info=True)
         logger.info("audio_service_stopped")
 
 

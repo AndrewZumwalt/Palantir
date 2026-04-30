@@ -35,6 +35,18 @@ class Channels:
     SYSTEM_STATUS = "system:status"
     SYSTEM_RELOAD = "system:reload"
     SYSTEM_RELOAD_PROGRESS = "system:reload:progress"
+    # ----- Pi <-> laptop relay (only used when input.source = "relay") -----
+    # Web service publishes raw sensor data here after decoding from the
+    # Pi's WebSocket; audio + vision services subscribe instead of opening
+    # local hardware.
+    RELAY_AUDIO_IN = "relay:audio:in"        # bytes: int16 LE PCM, 16 kHz mono
+    RELAY_VIDEO_FRAME = "relay:video:frame"  # bytes: JPEG-encoded BGR frame
+    RELAY_GPIO = "relay:gpio"                # JSON GPIO event from Pi
+    # Reverse direction: TTS service publishes synthesized PCM here, web
+    # forwards each chunk to the Pi for playback.
+    RELAY_AUDIO_OUT = "relay:audio:out"      # bytes: int16 LE PCM
+    RELAY_HARDWARE_CMD = "relay:hardware"    # JSON LED/relay commands
+    RELAY_STATUS = "relay:status"            # JSON connection state
 
 
 # Redis key names for ephemeral state
@@ -48,11 +60,20 @@ class Keys:
     SERVICE_STATUS = "state:service_status"
 
 
-async def create_redis(config: PalantirConfig) -> aioredis.Redis:
+async def create_redis(
+    config: PalantirConfig,
+    *,
+    decode_responses: bool = True,
+) -> aioredis.Redis:
     """Create a Redis connection, trying Unix socket first then TCP fallback.
 
     Set `PALANTIR_REDIS_FAKE=1` to use an in-process fakeredis instead
     (development/testing on machines without a real redis-server).
+
+    `decode_responses=True` (the default) returns str values — what most
+    of the codebase expects.  Set `False` to get raw bytes back; needed
+    for the relay binary channels (PCM, JPEG) where utf-8 decode would
+    corrupt the payload.  Use `create_binary_redis()` for that case.
     """
     if os.environ.get("PALANTIR_REDIS_FAKE") == "1":
         global _fake_server
@@ -67,16 +88,22 @@ async def create_redis(config: PalantirConfig) -> aioredis.Redis:
         if _fake_server is None:
             _fake_server = fakeredis.FakeServer()
         r = fakeredis.aioredis.FakeRedis(
-            server=_fake_server, decode_responses=True
+            server=_fake_server, decode_responses=decode_responses
         )
         await r.ping()
-        logger.info("redis_connected", url="fakeredis://in-process")
+        logger.info(
+            "redis_connected",
+            url="fakeredis://in-process",
+            decode_responses=decode_responses,
+        )
         return r
 
-    r = aioredis.from_url(config.redis.url, decode_responses=True)
+    r = aioredis.from_url(config.redis.url, decode_responses=decode_responses)
     try:
         await r.ping()
-        logger.info("redis_connected", url=config.redis.url)
+        logger.info(
+            "redis_connected", url=config.redis.url, decode_responses=decode_responses
+        )
         return r
     except (ConnectionError, OSError):
         logger.warning("redis_unix_socket_failed", url=config.redis.url)
@@ -86,10 +113,23 @@ async def create_redis(config: PalantirConfig) -> aioredis.Redis:
         except Exception:
             logger.debug("redis_primary_close_failed", exc_info=True)
 
-    r = aioredis.from_url(config.redis.fallback_url, decode_responses=True)
+    r = aioredis.from_url(config.redis.fallback_url, decode_responses=decode_responses)
     await r.ping()
-    logger.info("redis_connected", url=config.redis.fallback_url)
+    logger.info(
+        "redis_connected",
+        url=config.redis.fallback_url,
+        decode_responses=decode_responses,
+    )
     return r
+
+
+async def create_binary_redis(config: PalantirConfig) -> aioredis.Redis:
+    """Convenience wrapper: a Redis client that returns raw bytes.
+
+    Use this for the relay channels (`relay:audio:*`, `relay:video:*`)
+    where payloads are PCM / JPEG and would be mangled by utf-8 decode.
+    """
+    return await create_redis(config, decode_responses=False)
 
 
 async def publish(redis: aioredis.Redis, channel: str, data: Any) -> None:

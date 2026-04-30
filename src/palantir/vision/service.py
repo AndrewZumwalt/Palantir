@@ -24,10 +24,17 @@ from palantir.models import (
     VisiblePerson,
 )
 from palantir.preflight import log_and_check, validate_for
-from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
+from palantir.redis_client import (
+    Channels,
+    Keys,
+    Subscriber,
+    create_binary_redis,
+    create_redis,
+    publish,
+)
 from palantir.reload import handle_reload_request
 
-from .capture import CameraCapture
+from .capture import CameraCapture, create_camera_capture
 
 logger = structlog.get_logger()
 
@@ -62,6 +69,7 @@ class VisionService:
         self._config = load_config()
         self._camera: CameraCapture | None = None
         self._redis = None
+        self._binary_redis = None  # only created in relay mode
         self._subscriber: Subscriber | None = None
         self._db = None
         self._privacy_mode = False
@@ -138,8 +146,15 @@ class VisionService:
         self._subscriber.on(Channels.SYSTEM_RELOAD, self._on_reload)
         await self._subscriber.start()
 
-        # Start camera
-        self._camera = CameraCapture(self._config.camera)
+        # Start camera (local USB camera OR Pi relay over Redis)
+        relay_mode = self._config.relay.mode == "relay"
+        if relay_mode and self._binary_redis is None:
+            self._binary_redis = await create_binary_redis(self._config)
+        self._camera = create_camera_capture(
+            self._config.camera,
+            relay_mode=relay_mode,
+            binary_redis=self._binary_redis,
+        )
         if not self._privacy_mode:
             self._camera.start()
 
@@ -383,7 +398,14 @@ class VisionService:
                     self._camera.stop()
                 except Exception:
                     logger.debug("camera_stop_during_reload_failed", exc_info=True)
-                self._camera = CameraCapture(self._config.camera)
+                relay_mode = self._config.relay.mode == "relay"
+                if relay_mode and self._binary_redis is None:
+                    self._binary_redis = await create_binary_redis(self._config)
+                self._camera = create_camera_capture(
+                    self._config.camera,
+                    relay_mode=relay_mode,
+                    binary_redis=self._binary_redis,
+                )
                 self._camera.start()
             await self._publish_status(healthy=True)
 
@@ -435,6 +457,11 @@ class VisionService:
             self._db.close()
         if self._redis:
             await self._redis.close()
+        if self._binary_redis:
+            try:
+                await self._binary_redis.close()
+            except Exception:
+                logger.debug("binary_redis_close_failed", exc_info=True)
         logger.info("vision_service_stopped")
 
 

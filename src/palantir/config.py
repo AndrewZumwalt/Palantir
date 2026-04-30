@@ -145,6 +145,24 @@ class BackupConfig:
 
 
 @dataclass
+class RelayConfig:
+    """Pi <-> laptop relay mode.
+
+    `mode = "local"` keeps the original behaviour: the box that runs the
+    audio/vision/tts services also owns the mic/camera/speaker.
+
+    `mode = "relay"` makes those services consume from Redis channels that
+    the web service populates from a Pi's WebSocket — i.e. the laptop
+    runs the ML stack, the Pi just streams sensors.
+    """
+
+    mode: str = "local"  # "local" | "relay"
+    # JPEG quality for video frames the Pi sends.  Higher = sharper but
+    # more bandwidth.  75 is a good 1080p default (~150-250 KB/frame).
+    video_jpeg_quality: int = 75
+
+
+@dataclass
 class PalantirConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
@@ -158,6 +176,7 @@ class PalantirConfig:
     attendance: AttendanceConfig = field(default_factory=AttendanceConfig)
     automation: AutomationConfig = field(default_factory=AutomationConfig)
     backup: BackupConfig = field(default_factory=BackupConfig)
+    relay: RelayConfig = field(default_factory=RelayConfig)
 
     # Non-TOML config loaded from environment
     anthropic_api_key: str = ""
@@ -218,6 +237,7 @@ def load_config(environment: str | None = None) -> PalantirConfig:
         "attendance": config.attendance,
         "automation": config.automation,
         "backup": config.backup,
+        "relay": config.relay,
     }
 
     for section_name, section_dc in section_map.items():
@@ -235,5 +255,10 @@ def load_config(environment: str | None = None) -> PalantirConfig:
     redis_url = os.environ.get("REDIS_URL")
     if redis_url:
         config.redis.url = redis_url
+
+    # Relay mode from env (handy for Windows where editing TOML is awkward)
+    relay_mode = os.environ.get("PALANTIR_RELAY_MODE")
+    if relay_mode in ("local", "relay"):
+        config.relay.mode = relay_mode
 
     return config

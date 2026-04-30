@@ -19,7 +19,7 @@ from palantir.preflight import log_and_check, validate_for
 from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
 from palantir.reload import handle_reload_request
 
-from .audio_output import AudioOutput
+from .audio_output import AudioOutput, create_audio_output
 from .piper_engine import PiperEngine
 
 logger = structlog.get_logger()
@@ -53,9 +53,16 @@ class TTSService:
         privacy = await self._redis.get(Keys.PRIVACY_MODE)
         self._privacy_mode = privacy == "1"
 
-        # Initialize TTS engine and audio output
+        # Initialize TTS engine and audio output (local speaker OR relay-to-Pi)
         self._engine = PiperEngine(self._config.tts)
-        self._output = AudioOutput()
+        relay_mode = self._config.relay.mode == "relay"
+        self._output = create_audio_output(
+            relay_mode=relay_mode,
+            redis=self._redis,
+            # Capture the TTS service's main loop — `play()` runs in an
+            # executor thread but the Redis client is bound to the loop.
+            loop=self._loop,
+        )
 
         # Subscribe to events
         self._subscriber = Subscriber(self._redis)
