@@ -118,8 +118,27 @@ pip install failed.  Common Windows causes:
     throw "pip install -e $pkgSpec failed"
 }
 
-# 2. Frontend bundle (only if node is available)
+# 2. Frontend bundle.  The web service mounts frontend/dist/ at "/", so
+# without a build the dashboard returns {"detail": "Not Found"}.  Install
+# Node automatically if winget is available and node is missing.
 $Node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $Node) {
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        Write-Host "[3/4] node not found; installing Node.js LTS via winget..." -ForegroundColor Cyan
+        winget install --silent -e --id OpenJS.NodeJS.LTS `
+            --accept-source-agreements --accept-package-agreements | Out-Null
+        # winget installs node to a fixed path on Windows; add it to this
+        # session's PATH so we can use it without restarting the shell.
+        $nodeDir = "C:\Program Files\nodejs"
+        if (Test-Path (Join-Path $nodeDir "node.exe")) {
+            $env:PATH = "$nodeDir;$env:PATH"
+            $Node = Get-Command node -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+$frontendDist = Join-Path $RepoRoot "frontend\dist"
 if ($Node) {
     Write-Host "[3/4] Building frontend..." -ForegroundColor Cyan
     Push-Location (Join-Path $RepoRoot "frontend")
@@ -127,8 +146,13 @@ if ($Node) {
         if (-not (Test-Path "node_modules")) { npm install --silent }
         npm run build --silent
     } finally { Pop-Location }
+} elseif (Test-Path $frontendDist) {
+    Write-Host "[3/4] node not found; using existing $frontendDist" -ForegroundColor Yellow
 } else {
-    Write-Host "[3/4] node not found; serving whatever's already in frontend/dist" -ForegroundColor Yellow
+    Write-Host "[3/4] node not found AND no frontend/dist -- dashboard will 404." -ForegroundColor Red
+    Write-Host "       Install Node.js LTS manually:" -ForegroundColor Red
+    Write-Host "         winget install -e --id OpenJS.NodeJS.LTS" -ForegroundColor Yellow
+    Write-Host "       Then re-run this script." -ForegroundColor Red
 }
 
 # 3. Data dirs + dev env

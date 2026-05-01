@@ -475,7 +475,13 @@ def main() -> None:
             task.cancel()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, shutdown, sig)
+        try:
+            loop.add_signal_handler(sig, shutdown, sig)
+        except NotImplementedError:
+            # Windows: the proactor loop has no add_signal_handler.
+            # Ctrl+C still surfaces via KeyboardInterrupt, and a SIGTERM
+            # from the OS will tear the process down anyway.
+            pass
 
     try:
         loop.run_until_complete(service.run())
