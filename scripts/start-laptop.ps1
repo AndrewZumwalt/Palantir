@@ -4,12 +4,22 @@
 # receive sensor data from a Pi via /relay/ws -- the audio + vision
 # captures subscribe to Redis instead of opening local hardware).
 #
+# Prereqs:
+#   * Python 3.11 (winget install -e --id Python.Python.3.11).  Many ML
+#     wheels still don't ship for 3.12/3.13 on Windows.
+#   * Optional, only with -WithMl: Microsoft C++ Build Tools, because
+#     insightface and friends build a Cython extension on install.
+#     https://visualstudio.microsoft.com/visual-cpp-build-tools/
+#
 # Run from the repo root:
 #     powershell -ExecutionPolicy Bypass -File .\scripts\start-laptop.ps1
 #
-# Ctrl-C terminates all child processes.  Logs are interleaved in this
-# console; use the dashboard at https://localhost:8080 for the structured
-# view once the web service is up.
+# Add -WithMl once Build Tools are installed for face/object detection:
+#     powershell -ExecutionPolicy Bypass -File .\scripts\start-laptop.ps1 -WithMl
+#
+# Ctrl-C terminates all child processes.  Logs stream to .\.dev-data\*.log;
+# use the dashboard at https://localhost:8080 for the structured view
+# once the web service is up.
 
 [CmdletBinding()]
 param(
@@ -17,8 +27,10 @@ param(
     [string]$AnthropicKey = $env:ANTHROPIC_API_KEY,
     [string]$GroqKey      = $env:GROQ_API_KEY,
     [string]$DataDir,
-    [switch]$LocalMode,   # use local mic/cam on the laptop instead of waiting for Pi
-    [switch]$NoFakeRedis  # talk to a real Redis (default: in-process fakeredis)
+    [switch]$LocalMode,    # use local mic/cam on the laptop instead of waiting for Pi
+    [switch]$NoFakeRedis,  # talk to a real Redis (default: in-process fakeredis)
+    [switch]$WithMl,       # include the [ml] extras (insightface/torch/whisper/yolo) -- needs MSVC Build Tools
+    [string]$PythonExe     # explicit Python interpreter; default = `py -3.11`
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,17 +48,75 @@ $ScriptDir = Split-Path -Parent $ScriptPath
 $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 if (-not $DataDir) { $DataDir = Join-Path $RepoRoot ".dev-data" }
 
-# 1. venv
+# 1. venv (must be Python 3.11 -- many ML wheels lag for 3.12+)
 $Venv = Join-Path $RepoRoot ".venv"
+
+function Resolve-Python311 {
+    param([string]$Hint)
+    if ($Hint) {
+        if (-not (Test-Path $Hint)) { throw "PythonExe '$Hint' does not exist" }
+        return $Hint
+    }
+    # Prefer the Python launcher if installed (winget put 3.11 here).
+    $py = Get-Command py -ErrorAction SilentlyContinue
+    if ($py) {
+        try {
+            $candidate = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null).Trim()
+            if ($candidate -and (Test-Path $candidate)) { return $candidate }
+        } catch {}
+    }
+    # Fall back to `python3.11` on PATH.
+    $direct = Get-Command python3.11 -ErrorAction SilentlyContinue
+    if ($direct) { return $direct.Source }
+    throw "Could not find Python 3.11.  Install it (winget install -e --id Python.Python.3.11) or pass -PythonExe <path>."
+}
+
 if (-not (Test-Path $Venv)) {
-    Write-Host "[1/4] Creating venv..." -ForegroundColor Cyan
-    python -m venv $Venv
+    $py311 = Resolve-Python311 -Hint $PythonExe
+    Write-Host "[1/4] Creating venv with $py311 ..." -ForegroundColor Cyan
+    & $py311 -m venv $Venv
+    if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
     & "$Venv\Scripts\python.exe" -m pip install --upgrade --quiet pip
 }
 $VenvPython = Join-Path $Venv "Scripts\python.exe"
+if (-not (Test-Path $VenvPython)) {
+    throw "Venv looks broken ($VenvPython missing).  Delete $Venv and re-run."
+}
+$venvVer = (& $VenvPython -c "import sys; print('%d.%d' % sys.version_info[:2])").Trim()
+if ($venvVer -ne "3.11") {
+    Write-Host ""
+    Write-Host "Existing venv runs Python $venvVer; this project needs 3.11." -ForegroundColor Red
+    Write-Host "Delete the venv and re-run:" -ForegroundColor Red
+    Write-Host "    Remove-Item -Recurse -Force '$Venv'" -ForegroundColor Yellow
+    Write-Host "    powershell -ExecutionPolicy Bypass -File .\scripts\start-laptop.ps1" -ForegroundColor Yellow
+    throw "wrong Python version in $Venv (got $venvVer, need 3.11)"
+}
 
-Write-Host "[2/4] Installing Python deps..." -ForegroundColor Cyan
-& $VenvPython -m pip install --quiet -e "$RepoRoot[ml,dev]"
+# By default just install the base + dev extras -- enough to launch the
+# six services in relay mode without the heavy ML stack.  Pass -WithMl
+# once you have MSVC Build Tools installed and want face/object detection.
+if ($WithMl) {
+    $pkgSpec   = "$RepoRoot" + "[ml,dev]"
+    $pkgFlavor = "with [ml]"
+} else {
+    $pkgSpec   = "$RepoRoot" + "[dev]"
+    $pkgFlavor = "core only"
+}
+
+Write-Host ("[2/4] Installing Python deps ({0}) ..." -f $pkgFlavor) -ForegroundColor Cyan
+& $VenvPython -m pip install --quiet -e $pkgSpec
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Warning @"
+pip install failed.  Common Windows causes:
+  - insightface / openwakeword need a C++ compiler.  Install
+    "Microsoft C++ Build Tools" (https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+    OR re-run without -WithMl to skip the heavy ML stack.
+  - Wrong Python version.  This script requires Python 3.11; delete
+    $Venv and re-run if it picked up a different one.
+"@
+    throw "pip install -e $pkgSpec failed"
+}
 
 # 2. Frontend bundle (only if node is available)
 $Node = Get-Command node -ErrorAction SilentlyContinue
