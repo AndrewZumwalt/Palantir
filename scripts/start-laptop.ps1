@@ -195,11 +195,30 @@ try {
     Write-Host "Dashboard: https://localhost:8080"
     Write-Host "Press Ctrl-C to stop." -ForegroundColor Yellow
 
+    $reported = @{}
     while ($true) {
         $alive = $false
         foreach ($s in $processes) {
-            if (-not $s.proc.HasExited) { $alive = $true } else {
-                Write-Warning ("  service $($s.name) exited (code $($s.proc.ExitCode))")
+            if (-not $s.proc.HasExited) {
+                $alive = $true
+                continue
+            }
+            if ($reported[$s.name]) { continue }
+            $reported[$s.name] = $true
+            $code = $s.proc.ExitCode
+            if ($null -eq $code) { $code = "?" }
+            Write-Warning ("service {0} exited (code {1})" -f $s.name, $code)
+            # Tail the last few lines of the service's stderr to surface
+            # the real failure (import error, missing key, etc.).
+            $errLog = Join-Path $DataDir ("{0}.err.log" -f $s.name)
+            if ((Test-Path $errLog) -and (Get-Item $errLog).Length -gt 0) {
+                Write-Host ("---- last 20 lines of {0} ----" -f $errLog) -ForegroundColor DarkGray
+                Get-Content $errLog -Tail 20 | ForEach-Object {
+                    Write-Host ("  | {0}" -f $_) -ForegroundColor DarkGray
+                }
+                Write-Host "----" -ForegroundColor DarkGray
+            } else {
+                Write-Host ("  (no stderr captured at {0})" -f $errLog) -ForegroundColor DarkGray
             }
         }
         if (-not $alive) {
