@@ -1,7 +1,7 @@
-# Palantir laptop-side launcher (Windows / PowerShell).
+﻿# Palantir laptop-side launcher (Windows / PowerShell).
 #
 # Spawns the six service processes in relay mode (the laptop expects to
-# receive sensor data from a Pi via /relay/ws — the audio + vision
+# receive sensor data from a Pi via /relay/ws -- the audio + vision
 # captures subscribe to Redis instead of opening local hardware).
 #
 # Run from the repo root:
@@ -24,13 +24,13 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Resolve the script's own directory.  We can't rely on $PSScriptRoot in
-# the param() block — on Windows PowerShell 5.1 it's empty there in some
+# the param() block -- on Windows PowerShell 5.1 it's empty there in some
 # invocation paths.  $PSCommandPath is reliably the full path of the
 # script being executed.
 $ScriptPath = $PSCommandPath
 if (-not $ScriptPath) { $ScriptPath = $MyInvocation.MyCommand.Path }
 if (-not $ScriptPath) {
-    throw "Cannot determine script path — run this file via -File, e.g.`n  powershell -ExecutionPolicy Bypass -File <full-path>\start-laptop.ps1"
+    throw "Cannot determine script path -- run this file via -File, e.g.`n  powershell -ExecutionPolicy Bypass -File <full-path>\start-laptop.ps1"
 }
 $ScriptDir = Split-Path -Parent $ScriptPath
 $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir "..")).Path
