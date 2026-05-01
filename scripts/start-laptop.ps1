@@ -16,13 +16,25 @@ param(
     [string]$AuthToken    = $env:PALANTIR_AUTH_TOKEN,
     [string]$AnthropicKey = $env:ANTHROPIC_API_KEY,
     [string]$GroqKey      = $env:GROQ_API_KEY,
-    [string]$DataDir      = (Join-Path $PSScriptRoot "..\.dev-data"),
+    [string]$DataDir,
     [switch]$LocalMode,   # use local mic/cam on the laptop instead of waiting for Pi
     [switch]$NoFakeRedis  # talk to a real Redis (default: in-process fakeredis)
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+
+# Resolve the script's own directory.  We can't rely on $PSScriptRoot in
+# the param() block — on Windows PowerShell 5.1 it's empty there in some
+# invocation paths.  $PSCommandPath is reliably the full path of the
+# script being executed.
+$ScriptPath = $PSCommandPath
+if (-not $ScriptPath) { $ScriptPath = $MyInvocation.MyCommand.Path }
+if (-not $ScriptPath) {
+    throw "Cannot determine script path — run this file via -File, e.g.`n  powershell -ExecutionPolicy Bypass -File <full-path>\start-laptop.ps1"
+}
+$ScriptDir = Split-Path -Parent $ScriptPath
+$RepoRoot  = (Resolve-Path (Join-Path $ScriptDir "..")).Path
+if (-not $DataDir) { $DataDir = Join-Path $RepoRoot ".dev-data" }
 
 # 1. venv
 $Venv = Join-Path $RepoRoot ".venv"
@@ -56,17 +68,20 @@ foreach ($d in @("enrollments", "models", "backups", "tls")) {
 if (-not $AuthToken) { $AuthToken = "devtoken" }
 
 Write-Host "[4/4] Starting services..." -ForegroundColor Cyan
+$relayDesc = if ($LocalMode) { "local (laptop hardware)" } else { "relay (waiting for Pi)" }
+$redisDesc = if ($NoFakeRedis) { "real (REDIS_URL or unix:///var/run/redis/redis.sock)" } else { "in-process fakeredis" }
+$relayMode = if ($LocalMode) { "local" } else { "relay" }
 Write-Host ("  auth token:    " + $AuthToken)
 Write-Host ("  data dir:      " + $DataDir)
-Write-Host ("  relay mode:    " + (if ($LocalMode) { "local (laptop hardware)" } else { "relay (waiting for Pi)" }))
-Write-Host ("  redis:         " + (if ($NoFakeRedis) { "real (REDIS_URL or unix:///var/run/redis/redis.sock)" } else { "in-process fakeredis" }))
+Write-Host ("  relay mode:    " + $relayDesc)
+Write-Host ("  redis:         " + $redisDesc)
 
 $envOverrides = @{
     PALANTIR_ENV             = "development"
     PALANTIR_AUTH_TOKEN      = $AuthToken
     PALANTIR_DB_PATH         = (Join-Path $DataDir "palantir.db")
     PALANTIR_ENROLLMENT_PATH = (Join-Path $DataDir "enrollments")
-    PALANTIR_RELAY_MODE      = (if ($LocalMode) { "local" } else { "relay" })
+    PALANTIR_RELAY_MODE      = $relayMode
 }
 if (-not $NoFakeRedis) { $envOverrides["PALANTIR_REDIS_FAKE"] = "1" }
 if ($AnthropicKey)     { $envOverrides["ANTHROPIC_API_KEY"]   = $AnthropicKey }
