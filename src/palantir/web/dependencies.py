@@ -32,7 +32,11 @@ async def verify_auth(
 ) -> None:
     """Verify bearer token authentication."""
     if not config.auth_token:
-        # No auth configured (development mode)
+        if config.is_production:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication token is not configured",
+            )
         return
 
     if not credentials or not secrets.compare_digest(

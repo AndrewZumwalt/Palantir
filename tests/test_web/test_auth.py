@@ -21,6 +21,14 @@ async def test_verify_auth_noop_when_token_unset():
     await verify_auth(config=cfg, credentials=None)
 
 
+async def test_verify_auth_rejects_unset_token_in_production():
+    cfg = PalantirConfig(environment="production")
+    cfg.auth_token = ""
+    with pytest.raises(HTTPException) as exc:
+        await verify_auth(config=cfg, credentials=None)
+    assert exc.value.status_code == 503
+
+
 async def test_verify_auth_rejects_bad_token():
     cfg = PalantirConfig()
     cfg.auth_token = "expected"

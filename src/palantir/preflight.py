@@ -100,9 +100,12 @@ def _check_vision_deps(result: PreflightResult) -> None:
 def _check_web_deps(config: PalantirConfig, result: PreflightResult) -> None:
     """Web service should have a clean port and its auth state is worth warning about."""
     if not config.auth_token:
-        result.warn(
-            "No auth_token configured; API is open to anyone on the network"
-        )
+        if config.is_production:
+            result.error("PALANTIR_AUTH_TOKEN must be set in production")
+        else:
+            result.warn(
+                "No auth_token configured; API is open to anyone on the network"
+            )
 
     # Frontend dist directory existence is informational
     frontend_dist = (

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 
-from palantir.web.rate_limit import SlidingWindowLimiter
+from starlette.datastructures import Headers
+
+from palantir.web.rate_limit import SlidingWindowLimiter, _client_key
 
 
 def test_limiter_allows_under_threshold():
@@ -38,3 +41,12 @@ def test_limiter_refills_after_window():
     assert limiter.check("client")[0] is False
     time.sleep(0.06)
     assert limiter.check("client")[0] is True
+
+
+def test_client_key_ignores_spoofable_forwarded_for_header():
+    request = SimpleNamespace(
+        client=SimpleNamespace(host="10.0.0.5"),
+        headers=Headers({"x-forwarded-for": "203.0.113.9"}),
+    )
+
+    assert _client_key(request) == "10.0.0.5"

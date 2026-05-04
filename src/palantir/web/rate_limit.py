@@ -48,14 +48,12 @@ _read_limiter = SlidingWindowLimiter(max_requests=240, window_seconds=60.0)
 def _client_key(request: Request) -> str:
     """Identify the client for rate limiting.
 
-    Prefers the real IP from X-Forwarded-For if a trusted reverse proxy is in
-    use; falls back to the direct client host.
+    Use the direct peer address only. X-Forwarded-For is client-controlled
+    unless a trusted proxy strips and rewrites it, and Palantir does not
+    currently have trusted-proxy configuration.
     """
     if not request.client:
         return "anonymous"
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
     return request.client.host
 
 

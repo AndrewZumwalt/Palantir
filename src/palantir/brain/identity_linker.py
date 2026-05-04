@@ -202,3 +202,7 @@ class IdentityLinker:
         ]
         for pid in stale:
             del self._last_known[pid]
+
+    def reset(self) -> None:
+        """Clear all cached visual positions."""
+        self._last_known.clear()

@@ -45,6 +45,53 @@ from .websocket import WebSocketManager
 logger = structlog.get_logger()
 
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "dist"
+MAX_RELAY_AUDIO_PAYLOAD_BYTES = 256 * 1024
+MAX_RELAY_VIDEO_PAYLOAD_BYTES = 4 * 1024 * 1024
+MAX_RELAY_FRAME_BYTES = MAX_RELAY_VIDEO_PAYLOAD_BYTES + 1
+MAX_RELAY_AUDIO_FRAMES_PER_SECOND = 80
+MAX_RELAY_VIDEO_FRAMES_PER_SECOND = 30
+
+
+def _relay_payload_limit(op: Op) -> int | None:
+    if op == Op.AUDIO_IN:
+        return MAX_RELAY_AUDIO_PAYLOAD_BYTES
+    if op == Op.VIDEO_FRAME:
+        return MAX_RELAY_VIDEO_PAYLOAD_BYTES
+    return None
+
+
+def _relay_rate_limit(op: Op) -> int | None:
+    if op == Op.AUDIO_IN:
+        return MAX_RELAY_AUDIO_FRAMES_PER_SECOND
+    if op == Op.VIDEO_FRAME:
+        return MAX_RELAY_VIDEO_FRAMES_PER_SECOND
+    return None
+
+
+def _relay_payload_too_large(frame: Frame) -> bool:
+    limit = _relay_payload_limit(frame.op)
+    return limit is not None and len(frame.payload) > limit
+
+
+class _RelayFrameLimiter:
+    def __init__(self, *, now: float | None = None, window_seconds: float = 1.0):
+        self._window_started = time.monotonic() if now is None else now
+        self._window_seconds = window_seconds
+        self._counts: dict[Op, int] = {}
+
+    def check(self, op: Op, *, now: float | None = None) -> bool:
+        limit = _relay_rate_limit(op)
+        if limit is None:
+            return True
+
+        current = time.monotonic() if now is None else now
+        if current - self._window_started >= self._window_seconds:
+            self._window_started = current
+            self._counts.clear()
+
+        count = self._counts.get(op, 0) + 1
+        self._counts[op] = count
+        return count <= limit
 
 
 @asynccontextmanager
@@ -52,7 +99,8 @@ async def lifespan(app: FastAPI):
     """Application lifecycle: setup and teardown shared resources."""
     config = load_config()
     preflight = validate_for("web", config)
-    log_and_check(preflight, fatal_on_error=False)
+    if not log_and_check(preflight, fatal_on_error=False):
+        raise RuntimeError("web preflight failed")
 
     redis = await create_redis(config)
     # Second client for binary relay channels (PCM, JPEG); only used by
@@ -157,7 +205,11 @@ def create_app() -> FastAPI:
 
         # Optional auth check for WebSocket
         config: PalantirConfig = app.state.config
-        if config.auth_token:
+        if not config.auth_token:
+            if config.is_production:
+                await websocket.close(code=1011, reason="Authentication not configured")
+                return
+        else:
             token = websocket.query_params.get("token") or ""
             if not secrets.compare_digest(token, config.auth_token):
                 await websocket.close(code=4001, reason="Unauthorized")
@@ -182,7 +234,11 @@ def create_app() -> FastAPI:
         config: PalantirConfig = app.state.config
 
         # Auth: same bearer token as the dashboard WS
-        if config.auth_token:
+        if not config.auth_token:
+            if config.is_production:
+                await websocket.close(code=1011, reason="Authentication not configured")
+                return
+        else:
             token = websocket.query_params.get("token") or ""
             if not secrets.compare_digest(token, config.auth_token):
                 await websocket.close(code=4001, reason="Unauthorized")
@@ -200,6 +256,7 @@ def create_app() -> FastAPI:
         app.state.relay_pi = websocket
         text_redis = app.state.redis
         bin_redis = app.state.binary_redis
+        relay_limiter = _RelayFrameLimiter()
 
         # Announce that the Pi is online so the dashboard can react.
         try:
@@ -284,10 +341,29 @@ def create_app() -> FastAPI:
         try:
             while True:
                 message = await websocket.receive_bytes()
+                if len(message) > MAX_RELAY_FRAME_BYTES:
+                    logger.warning(
+                        "relay_frame_too_large",
+                        size=len(message),
+                        limit=MAX_RELAY_FRAME_BYTES,
+                    )
+                    continue
+
                 try:
                     frame = Frame.decode(message)
                 except ValueError:
                     logger.debug("relay_bad_frame", size=len(message))
+                    continue
+                if _relay_payload_too_large(frame):
+                    logger.warning(
+                        "relay_payload_too_large",
+                        op=int(frame.op),
+                        size=len(frame.payload),
+                        limit=_relay_payload_limit(frame.op),
+                    )
+                    continue
+                if not relay_limiter.check(frame.op):
+                    logger.warning("relay_frame_rate_limited", op=int(frame.op))
                     continue
 
                 if frame.op == Op.AUDIO_IN:

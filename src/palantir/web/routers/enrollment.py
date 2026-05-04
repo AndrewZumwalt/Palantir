@@ -6,6 +6,8 @@ capturing face photos, extracting embeddings, and storing them.
 
 from __future__ import annotations
 
+import asyncio
+import secrets
 import sqlite3
 import uuid
 from datetime import datetime
@@ -13,13 +15,15 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from palantir.config import PalantirConfig
+from palantir.redis_client import Channels, Keys, publish
 from palantir.vision.face_detector import FaceDetector
 from palantir.vision.face_recognizer import FaceRecognizer
-from palantir.web.dependencies import get_config, get_db, verify_auth
+from palantir.web.dependencies import get_config, get_db, get_redis, verify_auth
 from palantir.web.rate_limit import rate_limit_enroll, rate_limit_read, rate_limit_write
 from palantir.web.validation import (
     decode_base64_audio,
@@ -38,6 +42,26 @@ router = APIRouter(
 # Lazy-initialized shared instances
 _face_detector: FaceDetector | None = None
 _face_recognizer: FaceRecognizer | None = None
+_enrollment_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_enrollment_lock(person_id: str) -> asyncio.Lock:
+    lock = _enrollment_locks.get(person_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _enrollment_locks[person_id] = lock
+    return lock
+
+
+def _next_sample_index(enrollment_dir: Path, pattern: str, prefix: str) -> int:
+    max_index = -1
+    for sample_path in enrollment_dir.glob(pattern):
+        suffix = sample_path.stem.removeprefix(prefix)
+        try:
+            max_index = max(max_index, int(suffix))
+        except ValueError:
+            continue
+    return max_index + 1
 
 
 def _get_face_detector() -> FaceDetector:
@@ -172,30 +196,35 @@ async def capture_face(
     if face.embedding is None:
         raise HTTPException(status_code=422, detail="Could not extract face embedding")
 
-    # Save enrollment photo
-    enrollment_dir = Path(config.enrollment_path) / person_id
-    enrollment_dir.mkdir(parents=True, exist_ok=True)
-    existing = list(enrollment_dir.glob("face_*.jpg"))
-    photo_idx = len(existing)
-    photo_path = enrollment_dir / f"face_{photo_idx:03d}.jpg"
-    cv2.imwrite(str(photo_path), frame)
+    async with _get_enrollment_lock(person_id):
+        current = db.execute("SELECT id FROM persons WHERE id = ?", (person_id,)).fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-    # Save embedding temporarily (we'll compute mean after all samples)
-    emb_path = enrollment_dir / f"emb_{photo_idx:03d}.npy"
-    np.save(str(emb_path), face.embedding)
+        # Save enrollment photo
+        enrollment_dir = Path(config.enrollment_path) / person_id
+        enrollment_dir.mkdir(parents=True, exist_ok=True)
+        photo_idx = _next_sample_index(enrollment_dir, "face_*.jpg", "face_")
+        photo_path = enrollment_dir / f"face_{photo_idx:03d}.jpg"
+        if not cv2.imwrite(str(photo_path), frame):
+            raise HTTPException(status_code=500, detail="Failed to save face sample")
 
-    total_samples = photo_idx + 1
-    required = config.identity.enrollment_face_samples
-    complete = total_samples >= required
+        # Save embedding temporarily (we'll compute mean after all samples)
+        emb_path = enrollment_dir / f"emb_{photo_idx:03d}.npy"
+        np.save(str(emb_path), face.embedding)
 
-    # If we have enough samples, compute mean embedding and store
-    if complete:
-        embeddings = []
-        for emb_file in sorted(enrollment_dir.glob("emb_*.npy")):
-            embeddings.append(np.load(str(emb_file)))
+        total_samples = len(list(enrollment_dir.glob("face_*.jpg")))
+        required = config.identity.enrollment_face_samples
+        complete = total_samples >= required
 
-        recognizer = _get_face_recognizer(db, config)
-        recognizer.enroll_face(person_id, embeddings)
+        # If we have enough samples, compute mean embedding and store
+        if complete:
+            embeddings = []
+            for emb_file in sorted(enrollment_dir.glob("emb_*.npy")):
+                embeddings.append(np.load(str(emb_file)))
+
+            recognizer = _get_face_recognizer(db, config)
+            recognizer.enroll_face(person_id, embeddings)
 
     return EnrollmentStatus(
         person_id=person_id,
@@ -275,23 +304,27 @@ async def capture_voice(
     if embedding is None:
         raise HTTPException(status_code=422, detail="Could not extract voice embedding")
 
-    # Save embedding
-    enrollment_dir = Path(config.enrollment_path) / person_id
-    enrollment_dir.mkdir(parents=True, exist_ok=True)
-    existing = list(enrollment_dir.glob("voice_emb_*.npy"))
-    idx = len(existing)
-    np.save(str(enrollment_dir / f"voice_emb_{idx:03d}.npy"), embedding)
+    async with _get_enrollment_lock(person_id):
+        current = db.execute("SELECT id FROM persons WHERE id = ?", (person_id,)).fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-    total_samples = idx + 1
-    required = config.identity.enrollment_voice_samples
-    complete = total_samples >= required
+        # Save embedding
+        enrollment_dir = Path(config.enrollment_path) / person_id
+        enrollment_dir.mkdir(parents=True, exist_ok=True)
+        idx = _next_sample_index(enrollment_dir, "voice_emb_*.npy", "voice_emb_")
+        np.save(str(enrollment_dir / f"voice_emb_{idx:03d}.npy"), embedding)
 
-    # If enough samples, compute mean and store
-    if complete:
-        embeddings = []
-        for emb_file in sorted(enrollment_dir.glob("voice_emb_*.npy")):
-            embeddings.append(np.load(str(emb_file)))
-        identifier.enroll_voice(person_id, embeddings)
+        total_samples = len(list(enrollment_dir.glob("voice_emb_*.npy")))
+        required = config.identity.enrollment_voice_samples
+        complete = total_samples >= required
+
+        # If enough samples, compute mean and store
+        if complete:
+            embeddings = []
+            for emb_file in sorted(enrollment_dir.glob("voice_emb_*.npy")):
+                embeddings.append(np.load(str(emb_file)))
+            identifier.enroll_voice(person_id, embeddings)
 
     return VoiceEnrollmentStatus(
         person_id=person_id,
@@ -348,31 +381,48 @@ async def unenroll_person(
     person_id: str,
     db: sqlite3.Connection = Depends(get_db),
     config: PalantirConfig = Depends(get_config),
+    redis: aioredis.Redis = Depends(get_redis),
 ):
     """Remove a person and all their data."""
     import shutil
 
-    row = db.execute("SELECT id FROM persons WHERE id = ?", (person_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Person not found")
+    async with _get_enrollment_lock(person_id):
+        row = db.execute("SELECT id FROM persons WHERE id = ?", (person_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Person not found")
 
-    # Delete enrollment files
-    enrollment_dir = Path(config.enrollment_path) / person_id
-    if enrollment_dir.exists():
-        shutil.rmtree(enrollment_dir)
+        # Delete enrollment files
+        enrollment_dir = Path(config.enrollment_path) / person_id
+        if enrollment_dir.exists():
+            shutil.rmtree(enrollment_dir)
 
-    if config.privacy.auto_delete_on_unenroll:
-        db.execute("DELETE FROM conversations WHERE person_id = ?", (person_id,))
-        db.execute("DELETE FROM memory WHERE person_id = ?", (person_id,))
-        db.execute("DELETE FROM engagement_samples WHERE person_id = ?", (person_id,))
-        db.execute("DELETE FROM events WHERE person_id = ?", (person_id,))
+        if config.privacy.auto_delete_on_unenroll:
+            db.execute("DELETE FROM conversations WHERE person_id = ?", (person_id,))
+            db.execute("DELETE FROM memory WHERE person_id = ?", (person_id,))
+            db.execute("DELETE FROM engagement_samples WHERE person_id = ?", (person_id,))
+            db.execute("DELETE FROM events WHERE person_id = ?", (person_id,))
 
-    db.execute("DELETE FROM attendance_records WHERE person_id = ?", (person_id,))
-    db.execute("DELETE FROM persons WHERE id = ?", (person_id,))
-    db.commit()
+        db.execute("DELETE FROM attendance_records WHERE person_id = ?", (person_id,))
+        db.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+        db.commit()
 
-    # Reload recognizer cache
-    global _face_recognizer
+    # Reset web-local caches and ask the long-running services to reload theirs.
+    global _face_recognizer, _speaker_identifier
     _face_recognizer = None
+    _speaker_identifier = None
+
+    await redis.hdel(Keys.VISIBLE_PERSONS, person_id)
+    await redis.srem(Keys.PRESENT_PERSONS, person_id)
+    await redis.delete("state:last_speaker")
+    await publish(
+        redis,
+        Channels.SYSTEM_RELOAD,
+        {
+            "reload_id": secrets.token_hex(8),
+            "services": ["vision", "audio", "brain"],
+            "reason": "person_unenrolled",
+            "person_id": person_id,
+        },
+    )
 
     return {"status": "deleted", "person_id": person_id}

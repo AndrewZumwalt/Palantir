@@ -179,11 +179,16 @@ class PalantirConfig:
     relay: RelayConfig = field(default_factory=RelayConfig)
 
     # Non-TOML config loaded from environment
+    environment: str = "development"
     anthropic_api_key: str = ""
     groq_api_key: str = ""
     auth_token: str = ""
     db_path: str = "/var/lib/palantir/palantir.db"
     enrollment_path: str = "/var/lib/palantir/enrollments"
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.lower() == "production"
 
 
 def _apply_dict_to_dataclass(dc: Any, data: dict[str, Any]) -> None:
@@ -223,6 +228,7 @@ def load_config(environment: str | None = None) -> PalantirConfig:
 
     # Build config object
     config = PalantirConfig()
+    config.environment = environment
 
     section_map = {
         "camera": config.camera,

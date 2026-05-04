@@ -304,6 +304,8 @@ class AudioService:
                 self._wake_word.reset()
             if self._vad:
                 self._vad.cancel()
+            if self._speaker_id:
+                self._speaker_id.reload_profiles()
             self._listening_for_utterance = False
             if self._capture and not self._privacy_mode:
                 try:
