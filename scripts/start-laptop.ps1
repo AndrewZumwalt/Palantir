@@ -165,10 +165,19 @@ Write-Host "[4/4] Starting services..." -ForegroundColor Cyan
 $relayDesc = if ($LocalMode) { "local (laptop hardware)" } else { "relay (waiting for Pi)" }
 $redisDesc = if ($NoFakeRedis) { "real (REDIS_URL or unix:///var/run/redis/redis.sock)" } else { "in-process fakeredis" }
 $relayMode = if ($LocalMode) { "local" } else { "relay" }
+
+# TLS: set the cert + key paths so the web service auto-generates a
+# self-signed cert in .dev-data/tls/ on first start.  Without this,
+# the web service serves plain http and the browser blocks
+# getUserMedia() on non-localhost origins.
+$tlsCert = Join-Path $DataDir "tls\cert.pem"
+$tlsKey  = Join-Path $DataDir "tls\key.pem"
+
 Write-Host ("  auth token:    " + $AuthToken)
 Write-Host ("  data dir:      " + $DataDir)
 Write-Host ("  relay mode:    " + $relayDesc)
 Write-Host ("  redis:         " + $redisDesc)
+Write-Host ("  tls cert:      " + $tlsCert)
 
 $envOverrides = @{
     PALANTIR_ENV             = "development"
@@ -176,6 +185,8 @@ $envOverrides = @{
     PALANTIR_DB_PATH         = (Join-Path $DataDir "palantir.db")
     PALANTIR_ENROLLMENT_PATH = (Join-Path $DataDir "enrollments")
     PALANTIR_RELAY_MODE      = $relayMode
+    PALANTIR_TLS_CERT_FILE   = $tlsCert
+    PALANTIR_TLS_KEY_FILE    = $tlsKey
 }
 if (-not $NoFakeRedis) { $envOverrides["PALANTIR_REDIS_FAKE"] = "1" }
 if ($AnthropicKey)     { $envOverrides["ANTHROPIC_API_KEY"]   = $AnthropicKey }
@@ -216,7 +227,7 @@ try {
 
     Write-Host ""
     Write-Host "All six services launched.  Logs streaming to $DataDir\*.log"
-    Write-Host "Dashboard: https://localhost:8080"
+    Write-Host "Dashboard: https://localhost:8080  (self-signed cert -- accept the browser warning)"
     Write-Host "Press Ctrl-C to stop." -ForegroundColor Yellow
 
     $reported = @{}

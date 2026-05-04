@@ -109,8 +109,38 @@ class _MicCapture:
                 continue
 
 
-class _CameraCapture:
-    """Yield JPEG-encoded BGR frames at the requested FPS."""
+class _CameraBase:
+    """Common JPEG/threading machinery shared between CSI and USB sources."""
+
+    def __init__(self, width: int, height: int, fps: int, jpeg_quality: int):
+        import cv2
+
+        self._cv2 = cv2
+        self._width = width
+        self._height = height
+        self._fps = max(1, fps)
+        self._quality = max(1, min(100, jpeg_quality))
+        self._latest_jpeg: Optional[bytes] = None
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._running = False
+
+    def _encode_and_store(self, frame_bgr) -> None:
+        ok, buf = self._cv2.imencode(
+            ".jpg", frame_bgr, [self._cv2.IMWRITE_JPEG_QUALITY, self._quality]
+        )
+        if not ok:
+            return
+        with self._lock:
+            self._latest_jpeg = buf.tobytes()
+
+    def latest(self) -> Optional[bytes]:
+        with self._lock:
+            return self._latest_jpeg
+
+
+class _USBCameraCapture(_CameraBase):
+    """Read frames from a USB / V4L2 camera via cv2.VideoCapture."""
 
     def __init__(
         self,
@@ -120,19 +150,9 @@ class _CameraCapture:
         fps: int,
         jpeg_quality: int,
     ):
-        import cv2
-
-        self._cv2 = cv2
+        super().__init__(width, height, fps, jpeg_quality)
         self._device = device
-        self._width = width
-        self._height = height
-        self._fps = max(1, fps)
-        self._quality = max(1, min(100, jpeg_quality))
-        self._cap: Optional[cv2.VideoCapture] = None
-        self._latest_jpeg: Optional[bytes] = None
-        self._lock = threading.Lock()
-        self._thread: Optional[threading.Thread] = None
-        self._running = False
+        self._cap = None  # cv2.VideoCapture | None
 
     def start(self) -> None:
         if self._cap is not None:
@@ -142,13 +162,14 @@ class _CameraCapture:
         cap.set(self._cv2.CAP_PROP_FRAME_HEIGHT, self._height)
         cap.set(self._cv2.CAP_PROP_FPS, self._fps)
         if not cap.isOpened():
-            raise RuntimeError(f"failed to open camera {self._device}")
+            raise RuntimeError(f"failed to open USB camera {self._device}")
         self._cap = cap
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         logger.info(
             "camera_started",
+            backend="usb",
             device=self._device,
             width=self._width,
             height=self._height,
@@ -158,7 +179,6 @@ class _CameraCapture:
     def _loop(self) -> None:
         import time
 
-        encode_params = [self._cv2.IMWRITE_JPEG_QUALITY, self._quality]
         period = 1.0 / self._fps
         last = 0.0
         while self._running and self._cap is not None and self._cap.isOpened():
@@ -167,20 +187,12 @@ class _CameraCapture:
                 logger.warning("camera_read_failed")
                 time.sleep(0.05)
                 continue
-            ok, buf = self._cv2.imencode(".jpg", frame, encode_params)
-            if not ok:
-                continue
-            with self._lock:
-                self._latest_jpeg = buf.tobytes()
+            self._encode_and_store(frame)
             now = time.monotonic()
             sleep = period - (now - last)
             if sleep > 0:
                 time.sleep(sleep)
             last = time.monotonic()
-
-    def latest(self) -> Optional[bytes]:
-        with self._lock:
-            return self._latest_jpeg
 
     def stop(self) -> None:
         self._running = False
@@ -193,6 +205,129 @@ class _CameraCapture:
             except Exception:
                 logger.debug("camera_release_failed", exc_info=True)
             self._cap = None
+
+
+class _CSICameraCapture(_CameraBase):
+    """Read frames from the Raspberry Pi CSI (ribbon-cable) camera via
+    libcamera/picamera2.
+
+    picamera2 is shipped with Pi OS (`apt install python3-picamera2`).
+    For the venv to see it, install-pi-relay.sh creates the venv with
+    `--system-site-packages`.  If picamera2 isn't importable we raise at
+    start() time so the auto-detection in `_make_camera_capture` can
+    fall back to USB.
+    """
+
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        fps: int,
+        jpeg_quality: int,
+    ):
+        super().__init__(width, height, fps, jpeg_quality)
+        self._picam = None  # picamera2.Picamera2 | None
+
+    def start(self) -> None:
+        if self._picam is not None:
+            return
+        try:
+            from picamera2 import Picamera2
+        except Exception as e:  # pragma: no cover - hardware-only path
+            raise RuntimeError(
+                "picamera2 not available; install with "
+                "'sudo apt install python3-picamera2' and create the "
+                "venv with --system-site-packages"
+            ) from e
+
+        picam = Picamera2()
+        config = picam.create_video_configuration(
+            main={"size": (self._width, self._height), "format": "RGB888"},
+            controls={"FrameRate": float(self._fps)},
+        )
+        picam.configure(config)
+        picam.start()
+        self._picam = picam
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        logger.info(
+            "camera_started",
+            backend="csi",
+            width=self._width,
+            height=self._height,
+            fps=self._fps,
+        )
+
+    def _loop(self) -> None:
+        import time
+
+        period = 1.0 / self._fps
+        last = 0.0
+        while self._running and self._picam is not None:
+            try:
+                rgb = self._picam.capture_array()
+            except Exception:
+                logger.warning("csi_camera_read_failed", exc_info=True)
+                time.sleep(0.05)
+                continue
+            # picamera2 hands us RGB; cv2.imencode wants BGR for correct
+            # colours when the laptop side decodes.
+            bgr = self._cv2.cvtColor(rgb, self._cv2.COLOR_RGB2BGR)
+            self._encode_and_store(bgr)
+            now = time.monotonic()
+            sleep = period - (now - last)
+            if sleep > 0:
+                time.sleep(sleep)
+            last = time.monotonic()
+
+    def stop(self) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        if self._picam is not None:
+            try:
+                self._picam.stop()
+                self._picam.close()
+            except Exception:
+                logger.debug("csi_camera_close_failed", exc_info=True)
+            self._picam = None
+
+
+def _make_camera_capture(
+    camera_type: str,
+    device: int,
+    width: int,
+    height: int,
+    fps: int,
+    jpeg_quality: int,
+):
+    """Factory: pick CSI / USB / auto-detect.
+
+    `auto` tries CSI first (it's the typical Pi case) and falls back to
+    USB when picamera2 isn't importable or fails to open the sensor.
+    """
+    want = camera_type.lower()
+    if want == "csi":
+        return _CSICameraCapture(width, height, fps, jpeg_quality)
+    if want == "usb":
+        return _USBCameraCapture(device, width, height, fps, jpeg_quality)
+
+    # auto
+    csi = _CSICameraCapture(width, height, fps, jpeg_quality)
+    try:
+        csi.start()
+        return csi
+    except Exception as e:
+        logger.info("csi_camera_unavailable_falling_back", error=str(e))
+        try:
+            csi.stop()
+        except Exception:
+            pass
+        usb = _USBCameraCapture(device, width, height, fps, jpeg_quality)
+        usb.start()
+        return usb
 
 
 class _Speaker:
@@ -314,6 +449,7 @@ class PiRelayClient:
         url: str,
         token: Optional[str],
         *,
+        camera_type: str,
         camera_device: int,
         camera_width: int,
         camera_height: int,
@@ -330,6 +466,7 @@ class PiRelayClient:
     ):
         self.url = url
         self.token = token
+        self.camera_type = camera_type
         self.camera_device = camera_device
         self.camera_width = camera_width
         self.camera_height = camera_height
@@ -347,7 +484,7 @@ class PiRelayClient:
         self._stop = asyncio.Event()
         self._privacy_engaged = False
         self._mic: Optional[_MicCapture] = None
-        self._cam: Optional[_CameraCapture] = None
+        self._cam = None  # _CSICameraCapture | _USBCameraCapture | None
         self._speaker: Optional[_Speaker] = None
         self._gpio: Optional[_Gpio] = None
 
@@ -358,14 +495,19 @@ class PiRelayClient:
             self._mic = _MicCapture(self.audio_sr, self.audio_chunk_ms, self.mic_device)
             self._mic.start()
         if not self.no_video:
-            self._cam = _CameraCapture(
+            # _make_camera_capture handles auto-detection (CSI first, USB
+            # fallback) and calls .start() in the auto path.  For explicit
+            # csi/usb we still need to call start() ourselves.
+            self._cam = _make_camera_capture(
+                self.camera_type,
                 self.camera_device,
                 self.camera_width,
                 self.camera_height,
                 self.camera_fps,
                 self.jpeg_quality,
             )
-            self._cam.start()
+            if self.camera_type.lower() != "auto":
+                self._cam.start()
         if not self.no_audio_out:
             self._speaker = _Speaker()
         if not self.no_gpio:
@@ -587,7 +729,19 @@ def _build_argparser() -> argparse.ArgumentParser:
         default=os.environ.get("PALANTIR_AUTH_TOKEN", ""),
         help="Auth bearer token; usually set via PALANTIR_AUTH_TOKEN.",
     )
-    p.add_argument("--camera", type=int, default=0, help="cv2 video device index")
+    p.add_argument(
+        "--camera-type",
+        choices=("auto", "csi", "usb"),
+        default="auto",
+        help="Camera backend.  'csi' = ribbon-cable Pi camera via picamera2; "
+        "'usb' = cv2.VideoCapture; 'auto' tries csi then falls back to usb.",
+    )
+    p.add_argument(
+        "--camera",
+        type=int,
+        default=0,
+        help="cv2 video device index (only used when --camera-type=usb or auto fallback).",
+    )
     p.add_argument("--width", type=int, default=1920)
     p.add_argument("--height", type=int, default=1080)
     p.add_argument("--fps", type=int, default=15)
@@ -621,6 +775,7 @@ def main() -> None:
     client = PiRelayClient(
         url=args.laptop,
         token=args.token or None,
+        camera_type=args.camera_type,
         camera_device=args.camera,
         camera_width=args.width,
         camera_height=args.height,

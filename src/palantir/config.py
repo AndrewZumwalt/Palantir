@@ -261,4 +261,15 @@ def load_config(environment: str | None = None) -> PalantirConfig:
     if relay_mode in ("local", "relay"):
         config.relay.mode = relay_mode
 
+    # TLS paths from env override TOML.  When both are set, the web
+    # service auto-generates a self-signed cert there on first start;
+    # this is how dev setups (Windows launcher, Mac dev-up.sh) opt into
+    # https://localhost:8080 without committing certs to the repo.
+    tls_cert = os.environ.get("PALANTIR_TLS_CERT_FILE")
+    tls_key = os.environ.get("PALANTIR_TLS_KEY_FILE")
+    if tls_cert:
+        config.web.tls_cert_file = tls_cert
+    if tls_key:
+        config.web.tls_key_file = tls_key
+
     return config
