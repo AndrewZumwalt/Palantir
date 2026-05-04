@@ -364,9 +364,19 @@ class VisionService:
         if event.enabled:
             if self._camera and self._camera.is_running:
                 self._camera.stop()
-            # Clear visible state
-            await self._redis.delete(Keys.VISIBLE_PERSONS)
-            logger.info("vision_privacy_mode_enabled")
+            present_ids = set(await self._redis.smembers(Keys.PRESENT_PERSONS))
+            if self._attendance_tracker:
+                present_ids.update(self._attendance_tracker.clear_present())
+
+            await self._redis.delete(Keys.VISIBLE_PERSONS, Keys.PRESENT_PERSONS)
+            for person_id in present_ids:
+                exit_event = Event(
+                    type=EventType.PERSON_EXITED,
+                    person_id=person_id,
+                    data={"reason": "privacy_mode"},
+                )
+                await publish(self._redis, Channels.EVENTS_LOG, exit_event)
+            logger.info("vision_privacy_mode_enabled", present_cleared=len(present_ids))
         else:
             if self._camera and not self._camera.is_running:
                 self._camera.start()
@@ -422,9 +432,19 @@ class VisionService:
                 "fps": self._camera.fps if self._camera else 0.0,
                 "frames_processed": self._last_frame_count,
                 "face_detection": _FACE_AVAILABLE,
-                "engagement_active": _ENGAGEMENT_AVAILABLE and self._engagement_classifier is not None,
-                "enrolled_faces": self._face_recognizer.enrolled_count if self._face_recognizer else 0,
-                "present_count": self._attendance_tracker.present_count if self._attendance_tracker else 0,
+                "engagement_active": (
+                    _ENGAGEMENT_AVAILABLE and self._engagement_classifier is not None
+                ),
+                "enrolled_faces": (
+                    self._face_recognizer.enrolled_count
+                    if self._face_recognizer
+                    else 0
+                ),
+                "present_count": (
+                    self._attendance_tracker.present_count
+                    if self._attendance_tracker
+                    else 0
+                ),
             },
         )
         await publish(self._redis, Channels.SYSTEM_STATUS, status)

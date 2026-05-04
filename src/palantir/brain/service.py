@@ -26,7 +26,14 @@ from palantir.models import (
     Utterance,
 )
 from palantir.preflight import log_and_check, validate_for
-from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
+from palantir.redis_client import (
+    Channels,
+    Keys,
+    Subscriber,
+    create_binary_redis,
+    create_redis,
+    publish,
+)
 from palantir.reload import handle_reload_request
 from palantir.resilience import NetworkMonitor
 
@@ -55,6 +62,7 @@ class BrainService:
     def __init__(self):
         self._config = load_config()
         self._redis = None
+        self._binary_redis = None
         self._subscriber: Subscriber | None = None
         self._db = None
         self._privacy_mode = False
@@ -81,6 +89,7 @@ class BrainService:
 
         self._loop = asyncio.get_running_loop()
         self._redis = await create_redis(self._config)
+        self._binary_redis = await create_binary_redis(self._config)
         self._db = init_db(self._config)
 
         privacy = await self._redis.get(Keys.PRIVACY_MODE)
@@ -116,13 +125,16 @@ class BrainService:
         self._network_monitor = NetworkMonitor(check_interval_seconds=30.0)
         await self._network_monitor.start()
 
-        # Initialize automation engine and actuator
-        self._automation = AutomationEngine(self._db)
-        self._actuator = Actuator(
-            self._redis,
-            hardware=None,  # Brain doesn't own hardware; GPIO actions published for hardware owner
-            allow_shell=self._config.automation.allow_shell_commands,
-        )
+        # Initialize automation engine and actuator when enabled.
+        if self._config.automation.enabled:
+            self._automation = AutomationEngine(self._db)
+            self._actuator = Actuator(
+                self._redis,
+                hardware=None,
+                allow_shell=self._config.automation.allow_shell_commands,
+            )
+        else:
+            logger.info("automation_disabled")
 
         # Subscribe to events
         self._subscriber = Subscriber(self._redis)
@@ -409,7 +421,8 @@ class BrainService:
         import cv2
         import numpy as np
 
-        frame_bytes = await self._redis.get(Keys.LATEST_FRAME)
+        redis = self._binary_redis or self._redis
+        frame_bytes = await redis.get(Keys.LATEST_FRAME)
         if frame_bytes:
             np_arr = np.frombuffer(frame_bytes, np.uint8)
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
@@ -438,6 +451,8 @@ class BrainService:
             # Reload the identity linker's stale-timeout bookkeeping.
             if self._identity_linker and hasattr(self._identity_linker, "reset"):
                 self._identity_linker.reset()
+            if self._automation:
+                self._automation.reload()
             await self._publish_status(healthy=True)
 
         await handle_reload_request(self._redis, "brain", data, _do)
@@ -453,6 +468,7 @@ class BrainService:
                 "llm_provider": self._llm.provider if self._llm else "none",
                 "llm_circuit": self._llm.breaker_state if self._llm else "n/a",
                 "online": self._network_monitor.online if self._network_monitor else True,
+                "automation_enabled": self._config.automation.enabled,
                 "automation_rules": self._automation.rule_count if self._automation else 0,
                 "automation_triggered": self._automation_triggered,
             },
@@ -499,6 +515,8 @@ class BrainService:
             self._db.close()
         if self._redis:
             await self._redis.close()
+        if self._binary_redis:
+            await self._binary_redis.close()
         logger.info("brain_service_stopped")
 
 

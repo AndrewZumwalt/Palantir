@@ -47,7 +47,8 @@ async def get_session_history(
     """Get past session summaries."""
     sessions = db.execute(
         "SELECT s.*, "
-        "(SELECT COUNT(DISTINCT person_id) FROM attendance_records WHERE session_id = s.id) as attendee_count "
+        "(SELECT COUNT(DISTINCT person_id) FROM attendance_records "
+        "WHERE session_id = s.id) as attendee_count "
         "FROM sessions s ORDER BY s.started_at DESC LIMIT ?",
         (limit,),
     ).fetchall()

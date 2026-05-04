@@ -55,7 +55,9 @@ class ContextBuilder:
             for person_id, data_str in visible_data.items():
                 try:
                     data = json.loads(data_str)
-                    names.append(f"  - {data.get('name', 'Unknown')} ({data.get('role', 'unknown')})")
+                    name = data.get("name", "Unknown")
+                    role = data.get("role", "unknown")
+                    names.append(f"  - {name} ({role})")
                 except (json.JSONDecodeError, TypeError):
                     names.append(f"  - Person {person_id}")
             sections.append("[VISIBLE PERSONS]\n" + "\n".join(names))

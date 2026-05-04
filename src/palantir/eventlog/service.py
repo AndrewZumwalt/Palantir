@@ -64,7 +64,12 @@ class EventLogService:
             event = Event(**data)
             self._db.execute(
                 "INSERT INTO events (type, person_id, data, created_at) VALUES (?, ?, ?, ?)",
-                (event.type.value, event.person_id, json.dumps(event.data), event.timestamp.isoformat()),
+                (
+                    event.type.value,
+                    event.person_id,
+                    json.dumps(event.data),
+                    event.timestamp.isoformat(),
+                ),
             )
             self._db.commit()
             self._events_logged += 1

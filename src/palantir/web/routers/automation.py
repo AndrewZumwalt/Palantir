@@ -17,7 +17,11 @@ from palantir.web.dependencies import get_db, verify_auth
 from palantir.web.rate_limit import rate_limit_read, rate_limit_write
 from palantir.web.validation import validate_name, validate_rule_config
 
-router = APIRouter(prefix="/api/automation", tags=["automation"], dependencies=[Depends(verify_auth)])
+router = APIRouter(
+    prefix="/api/automation",
+    tags=["automation"],
+    dependencies=[Depends(verify_auth)],
+)
 
 
 TRIGGER_TYPES = {"person_enters", "person_exits", "schedule", "voice_command"}

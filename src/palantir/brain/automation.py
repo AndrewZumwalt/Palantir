@@ -89,8 +89,9 @@ class AutomationEngine:
             # Match by person_id or role (empty/missing config matches all)
             if "person_id" in cfg and cfg["person_id"] != person_id:
                 continue
-            if "role" in cfg and role is not None and cfg["role"] != role:
-                continue
+            if "role" in cfg:
+                if role is None or cfg["role"] != role:
+                    continue
 
             triggers.append(
                 AutomationTrigger(
@@ -227,7 +228,8 @@ def create_rule(db: sqlite3.Connection, data: dict) -> str:
     rule_id = str(uuid.uuid4())
     db.execute(
         "INSERT INTO automation_rules "
-        "(id, name, description, trigger_type, trigger_config, action_type, action_config, enabled) "
+        "(id, name, description, trigger_type, trigger_config, action_type, "
+        "action_config, enabled) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             rule_id,

@@ -163,7 +163,12 @@ class EngagementClassifier:
             return EngagementState.UNKNOWN
 
         nose_y = nose[1]
-        shoulder_y = (left_shoulder[1] + right_shoulder[1]) / 2 if (left_shoulder[2] > 0.3 and right_shoulder[2] > 0.3) else None
+        shoulders_visible = left_shoulder[2] > 0.3 and right_shoulder[2] > 0.3
+        shoulder_y = (
+            (left_shoulder[1] + right_shoulder[1]) / 2
+            if shoulders_visible
+            else None
+        )
 
         # --- SLEEPING: head at or below shoulder level, no movement ---
         pstate = self._person_states.get(person_id)

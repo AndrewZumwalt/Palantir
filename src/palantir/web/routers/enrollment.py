@@ -29,7 +29,11 @@ from palantir.web.validation import (
     validate_role,
 )
 
-router = APIRouter(prefix="/api/enrollment", tags=["enrollment"], dependencies=[Depends(verify_auth)])
+router = APIRouter(
+    prefix="/api/enrollment",
+    tags=["enrollment"],
+    dependencies=[Depends(verify_auth)],
+)
 
 # Lazy-initialized shared instances
 _face_detector: FaceDetector | None = None
@@ -159,7 +163,10 @@ async def capture_face(
     if not detections:
         raise HTTPException(status_code=422, detail="No face detected in image")
     if len(detections) > 1:
-        raise HTTPException(status_code=422, detail="Multiple faces detected. Please ensure only one person is in frame.")
+        raise HTTPException(
+            status_code=422,
+            detail="Multiple faces detected. Please ensure only one person is in frame.",
+        )
 
     face = detections[0]
     if face.embedding is None:
@@ -258,7 +265,10 @@ async def capture_voice(
         raise HTTPException(status_code=400, detail="Invalid audio data")
 
     if len(audio) < req.sample_rate:  # Less than 1 second
-        raise HTTPException(status_code=422, detail="Audio too short. Please speak for at least 2 seconds.")
+        raise HTTPException(
+            status_code=422,
+            detail="Audio too short. Please speak for at least 2 seconds.",
+        )
 
     # Extract voice embedding
     embedding = identifier.extract_embedding(audio, req.sample_rate)
@@ -309,8 +319,16 @@ async def enrollment_status(
         raise HTTPException(status_code=404, detail="Person not found")
 
     enrollment_dir = Path(config.enrollment_path) / person_id
-    face_samples = len(list(enrollment_dir.glob("face_*.jpg"))) if enrollment_dir.exists() else 0
-    voice_samples = len(list(enrollment_dir.glob("voice_emb_*.npy"))) if enrollment_dir.exists() else 0
+    face_samples = (
+        len(list(enrollment_dir.glob("face_*.jpg")))
+        if enrollment_dir.exists()
+        else 0
+    )
+    voice_samples = (
+        len(list(enrollment_dir.glob("voice_emb_*.npy")))
+        if enrollment_dir.exists()
+        else 0
+    )
 
     return {
         "person_id": person_id,

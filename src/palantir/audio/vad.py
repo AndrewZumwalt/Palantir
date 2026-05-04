@@ -48,7 +48,11 @@ class VoiceActivityDetector:
         self._silence_samples = 0
         self._speech_detected = False
 
-        logger.info("vad_initialized", sample_rate=sample_rate, silence_timeout_ms=silence_timeout_ms)
+        logger.info(
+            "vad_initialized",
+            sample_rate=sample_rate,
+            silence_timeout_ms=silence_timeout_ms,
+        )
 
     def start_recording(self) -> None:
         """Begin capturing an utterance (called after wake word detection)."""

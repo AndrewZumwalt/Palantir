@@ -144,6 +144,23 @@ class AttendanceTracker:
 
         return exited
 
+    def clear_present(self, exited_at: datetime | None = None) -> list[str]:
+        """Close all active attendance records without ending the session."""
+        if not self._active_records:
+            self._last_seen.clear()
+            return []
+
+        now = exited_at or datetime.now()
+        exited = list(self._active_records.keys())
+        for record_id in self._active_records.values():
+            self._close_record(record_id, now)
+
+        self._db.commit()
+        self._active_records.clear()
+        self._last_seen.clear()
+        logger.info("attendance_present_cleared", count=len(exited))
+        return exited
+
     def get_present(self) -> list[str]:
         """Get list of person_ids currently present."""
         return list(self._active_records.keys())

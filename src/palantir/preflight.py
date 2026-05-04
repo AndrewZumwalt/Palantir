@@ -170,7 +170,7 @@ def validate_for(service_name: str, config: PalantirConfig) -> PreflightResult:
 
 
 def log_and_check(result: PreflightResult, fatal_on_error: bool = True) -> bool:
-    """Log the result. Returns True if the service may proceed, False if it must abort."""
+    """Log the result. Returns True when preflight passed."""
     for warn in result.warnings:
         logger.warning("preflight_warning", service=result.service, issue=warn)
     for err in result.errors:
@@ -185,10 +185,11 @@ def log_and_check(result: PreflightResult, fatal_on_error: bool = True) -> bool:
             )
             return False
         logger.warning(
-            "preflight_failed_continuing",
+            "preflight_failed_nonfatal",
             service=result.service,
             errors=len(result.errors),
         )
+        return False
     else:
         logger.info(
             "preflight_ok",

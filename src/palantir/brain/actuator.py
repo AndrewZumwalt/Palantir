@@ -39,6 +39,7 @@ class Actuator:
         self._redis = redis
         self._hardware = hardware
         self._allow_shell = allow_shell
+        self._relay_states: dict[int, bool] = {}
 
     async def execute(self, trigger: AutomationTrigger) -> bool:
         """Execute a trigger's action. Returns True on success."""
@@ -61,33 +62,45 @@ class Actuator:
             return False
 
     async def _do_gpio(self, params: dict) -> bool:
-        if not self._hardware:
-            logger.warning("actuator_gpio_unavailable")
-            return False
-
         pin = int(params.get("pin", 0))
         if pin <= 0:
             return False
 
         state_str = str(params.get("state", "high")).lower()
         if state_str == "toggle":
-            relay = self._hardware.get_relay(pin)
-            target = not relay.value
+            if self._hardware:
+                relay = self._hardware.get_relay(pin)
+                target = not relay.value
+            else:
+                target = not self._relay_states.get(pin, False)
         else:
             target = state_str in ("high", "on", "true", "1")
 
-        self._hardware.set_relay(pin, target)
+        await self._set_gpio(pin, target)
 
         duration_ms = int(params.get("duration_ms", 0))
         if duration_ms > 0:
             # Schedule the reverse state after duration
             async def _reverse() -> None:
                 await asyncio.sleep(duration_ms / 1000.0)
-                self._hardware.set_relay(pin, not target)
+                await self._set_gpio(pin, not target)
 
             asyncio.create_task(_reverse())
 
         return True
+
+    async def _set_gpio(self, pin: int, state: bool) -> None:
+        """Set a GPIO relay locally or publish to the Pi relay owner."""
+        self._relay_states[pin] = state
+        if self._hardware:
+            self._hardware.set_relay(pin, state)
+            return
+
+        await publish(
+            self._redis,
+            Channels.RELAY_HARDWARE_CMD,
+            {"kind": "relay", "pin": pin, "state": state},
+        )
 
     async def _do_tts(self, params: dict) -> bool:
         text = params.get("text", "").strip()

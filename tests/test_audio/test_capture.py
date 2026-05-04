@@ -30,13 +30,13 @@ _install_sounddevice_stub()
 
 import numpy as np  # noqa: E402
 
-from palantir.audio.capture import AudioCapture  # noqa: E402
+from palantir.audio.capture import LocalAudioCapture  # noqa: E402
 from palantir.config import AudioConfig  # noqa: E402
 
 
-def _make_capture() -> AudioCapture:
+def _make_capture() -> LocalAudioCapture:
     cfg = AudioConfig()
-    cap = AudioCapture(cfg)
+    cap = LocalAudioCapture(cfg)
     # Shrink queue for faster test
     cap._thread_queue = queue.Queue(maxsize=2)
     return cap
