@@ -23,6 +23,12 @@ interface ConfigData {
   auth_configured: boolean;
   anthropic_configured: boolean;
   groq_configured: boolean;
+  /** "db" if set via the dashboard; "env" if from PALANTIR_*; null if unset. */
+  anthropic_source: "db" | "env" | null;
+  groq_source: "db" | "env" | null;
+  /** Last-4 fingerprint, never the full key. */
+  anthropic_hint: string | null;
+  groq_hint: string | null;
   llm_provider: "anthropic" | "groq" | "none";
   automation_enabled: boolean;
   allow_shell_commands: boolean;
@@ -110,6 +116,14 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupResult, setCleanupResult] = useState<RetentionResult | null>(null);
+  const [anthropicInput, setAnthropicInput] = useState("");
+  const [groqInput, setGroqInput] = useState("");
+  const [keysSaving, setKeysSaving] = useState(false);
+  const [keysSaved, setKeysSaved] = useState<string | null>(null);
+  const [keysError, setKeysError] = useState<string | null>(null);
+
+  const refreshConfig = () =>
+    api.get<ConfigData>("/settings/config").then(setConfig).catch(() => {});
 
   useEffect(() => {
     Promise.all([
@@ -123,6 +137,48 @@ export default function SettingsPage() {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+
+  const saveApiKeys = async () => {
+    setKeysSaving(true);
+    setKeysSaved(null);
+    setKeysError(null);
+    try {
+      const body: Record<string, string> = {};
+      if (anthropicInput.trim() !== "") body.anthropic_api_key = anthropicInput;
+      if (groqInput.trim() !== "") body.groq_api_key = groqInput;
+      if (Object.keys(body).length === 0) {
+        setKeysError("Enter at least one key (or use 'Clear' to delete one).");
+        return;
+      }
+      const result = await api.post<{ updated: string[] }>(
+        "/settings/api_keys",
+        body,
+      );
+      setAnthropicInput("");
+      setGroqInput("");
+      setKeysSaved(`Saved: ${result.updated.join(", ")}`);
+      await refreshConfig();
+    } catch (e) {
+      setKeysError("Save failed. Server may be offline.");
+    } finally {
+      setKeysSaving(false);
+    }
+  };
+
+  const clearApiKey = async (field: "anthropic_api_key" | "groq_api_key") => {
+    setKeysSaving(true);
+    setKeysSaved(null);
+    setKeysError(null);
+    try {
+      await api.post("/settings/api_keys", { [field]: "" });
+      setKeysSaved(`Cleared: ${field}`);
+      await refreshConfig();
+    } catch {
+      setKeysError("Clear failed. Server may be offline.");
+    } finally {
+      setKeysSaving(false);
+    }
+  };
 
   const togglePrivacy = async () => {
     const newState = !privacyMode;
@@ -362,11 +418,11 @@ export default function SettingsPage() {
           <div className="mt-4 flex items-start gap-2 px-3 py-2 bg-amber-500/10 border border-amber-600/60 font-data text-[11px] text-amber-200">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />
             <span>
-              No cognitive backend configured. Set{" "}
-              <strong>ANTHROPIC_API_KEY</strong> or{" "}
-              <strong>GROQ_API_KEY</strong> (free tier available) in{" "}
+              No cognitive backend configured. Set an API key below or via{" "}
+              <strong>ANTHROPIC_API_KEY</strong> /{" "}
+              <strong>GROQ_API_KEY</strong> in{" "}
               <span className="font-data text-amber-300">.env</span> to enable
-              LLM responses. The assistant will otherwise reply using a
+              LLM responses. Without one, the assistant replies with a
               deterministic offline responder.
             </span>
           </div>
@@ -381,6 +437,124 @@ export default function SettingsPage() {
             </span>
           </div>
         )}
+      </Panel>
+
+      {/* ============ API KEYS ============ */}
+      <Panel
+        label="API KEYS"
+        title="Cognitive backend credentials"
+        meta={
+          keysSaving ? (
+            <StatusPill tone="amber" size="xs" pulse>
+              SAVING
+            </StatusPill>
+          ) : null
+        }
+      >
+        <p className="text-sm text-gray-400 mb-4">
+          Stored in the local SQLite settings table. The brain service
+          reloads automatically -- no restart needed. Keys are never
+          returned to this page; only a last-4 fingerprint is shown.
+        </p>
+
+        <div className="space-y-4">
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="font-data text-[11px] uppercase tracking-[0.18em] text-gray-400">
+                Anthropic API key
+              </label>
+              <span className="font-data text-[11px] text-gray-500">
+                {config?.anthropic_configured
+                  ? `${config.anthropic_hint ?? ""} (${config.anthropic_source})`
+                  : "not set"}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={anthropicInput}
+                onChange={(e) => setAnthropicInput(e.target.value)}
+                placeholder="sk-ant-..."
+                className="flex-1 bg-[#0a0f1f] border border-[#1f2c4a] px-3 py-2 text-sm text-gray-200 font-data placeholder-gray-600 focus:outline-none focus:border-cyan-700"
+              />
+              {config?.anthropic_configured && (
+                <Button
+                  variant="danger"
+                  size="md"
+                  onClick={() => clearApiKey("anthropic_api_key")}
+                  disabled={keysSaving}
+                >
+                  CLEAR
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="font-data text-[11px] uppercase tracking-[0.18em] text-gray-400">
+                Groq API key
+              </label>
+              <span className="font-data text-[11px] text-gray-500">
+                {config?.groq_configured
+                  ? `${config.groq_hint ?? ""} (${config.groq_source})`
+                  : "not set"}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={groqInput}
+                onChange={(e) => setGroqInput(e.target.value)}
+                placeholder="gsk_..."
+                className="flex-1 bg-[#0a0f1f] border border-[#1f2c4a] px-3 py-2 text-sm text-gray-200 font-data placeholder-gray-600 focus:outline-none focus:border-cyan-700"
+              />
+              {config?.groq_configured && (
+                <Button
+                  variant="danger"
+                  size="md"
+                  onClick={() => clearApiKey("groq_api_key")}
+                  disabled={keysSaving}
+                >
+                  CLEAR
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 pt-2">
+            <Button
+              variant="primary"
+              onClick={saveApiKeys}
+              loading={keysSaving}
+              disabled={
+                keysSaving ||
+                (anthropicInput.trim() === "" && groqInput.trim() === "")
+              }
+              iconLeft={<KeyRound className="w-4 h-4" />}
+            >
+              SAVE KEYS
+            </Button>
+            {keysSaved && (
+              <span className="font-data text-[11px] text-emerald-300">
+                &gt; {keysSaved}
+              </span>
+            )}
+            {keysError && (
+              <span className="font-data text-[11px] text-red-300">
+                &gt; {keysError}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <p className="mt-4 font-data text-[10px] text-gray-600 uppercase tracking-[0.14em]">
+          // db-stored keys override env vars. clear to fall back to .env.
+        </p>
       </Panel>
 
       {/* ============ HARDWARE ============ */}

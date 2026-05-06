@@ -56,6 +56,9 @@ export default function EnrollmentWizard() {
   const [name, setName] = useState("");
   const [role, setRole] = useState("student");
   const [capturing, setCapturing] = useState(false);
+  const [faceDetectionAvailable, setFaceDetectionAvailable] = useState<
+    boolean | null
+  >(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -67,6 +70,15 @@ export default function EnrollmentWizard() {
 
   useEffect(() => {
     loadPersons();
+    // Capability probe so we can warn the operator if the backend can't
+    // actually run face detection (insightface not installed -- the face
+    // endpoint would otherwise return 503 only at capture time).
+    api
+      .get<{ face_detection_available?: boolean }>("/settings/config")
+      .then((cfg) =>
+        setFaceDetectionAvailable(cfg.face_detection_available !== false),
+      )
+      .catch(() => setFaceDetectionAvailable(null));
   }, [loadPersons]);
 
   const startCamera = useCallback(async () => {
@@ -394,6 +406,14 @@ export default function EnrollmentWizard() {
       `Biometric // face · ${currentPerson?.name}`,
       `Capture ${required} angles. Slight head rotation between samples.`,
       <Panel label="CAPTURE" title="Face enrollment" tone="amber" brackets>
+        {faceDetectionAvailable === false && (
+          <div className="mb-4 px-3 py-2 bg-amber-500/10 border border-amber-600/60 font-data text-[11px] text-amber-200">
+            &gt; FACE DETECTION OFFLINE -- backend has no insightface.
+            Install ML extras (e.g. <strong>start-laptop.ps1 -WithMl</strong>{" "}
+            on Windows after MSVC Build Tools) to enable enrollment.
+            Photos will fail with HTTP 503 until then.
+          </div>
+        )}
         <div className="flex items-center justify-between mb-3">
           <span className="font-data text-[11px] text-gray-400 uppercase tracking-[0.18em]">
             &gt; {samples.toString().padStart(2, "0")} / {required} samples
@@ -492,6 +512,7 @@ export default function EnrollmentWizard() {
             variant="primary"
             onClick={capturePhoto}
             loading={capturing}
+            disabled={faceDetectionAvailable === false}
             iconLeft={<Camera className="w-4 h-4" />}
           >
             {capturing ? "PROCESSING" : "CAPTURE"}

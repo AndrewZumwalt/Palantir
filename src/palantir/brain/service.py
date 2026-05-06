@@ -36,6 +36,7 @@ from palantir.redis_client import (
 )
 from palantir.reload import handle_reload_request
 from palantir.resilience import NetworkMonitor
+from palantir.settings_store import resolved_api_keys
 
 from .actuator import Actuator
 from .automation import AutomationEngine
@@ -96,30 +97,16 @@ class BrainService:
         self._privacy_mode = privacy == "1"
 
         # Initialize components. LLMClient picks its provider based on which
-        # key is set; Anthropic wins when both are present.
-        self._llm = LLMClient(
-            config=self._config.llm,
-            anthropic_api_key=self._config.anthropic_api_key,
-            groq_api_key=self._config.groq_api_key,
-        )
+        # key is set; Anthropic wins when both are present.  Keys merged
+        # from the SQLite settings store (set via the dashboard) over the
+        # env-var values from load_config().
+        self._build_llm_clients()
         self._context_builder = ContextBuilder(self._redis, self._db)
         self._conversation = ConversationManager(self._db)
         self._identity_linker = IdentityLinker(
             self._redis,
             staleness_timeout=self._config.identity.identity_staleness_seconds,
         )
-
-        # Initialize cloud vision for object/scene queries (accepts either key)
-        has_any_llm_key = bool(
-            self._config.anthropic_api_key or self._config.groq_api_key
-        )
-        if _CLOUD_VISION_AVAILABLE and has_any_llm_key:
-            self._cloud_vision = CloudVision(
-                anthropic_api_key=self._config.anthropic_api_key,
-                groq_api_key=self._config.groq_api_key,
-                anthropic_model=self._config.llm.default_model,
-                groq_model=self._config.llm.groq_vision_model,
-            )
 
         # Start network monitor for offline detection
         self._network_monitor = NetworkMonitor(check_interval_seconds=30.0)
@@ -436,16 +423,53 @@ class BrainService:
         self._privacy_mode = event.enabled
         logger.info("brain_privacy_mode", enabled=event.enabled)
 
-    async def _on_reload(self, data: dict) -> None:
-        """Soft-reload: reset LLM circuit breaker + reload automation rules.
+    def _build_llm_clients(self) -> None:
+        """(Re)create LLMClient + CloudVision from current key sources.
 
-        The circuit breaker can latch open after a transient API outage. A
-        soft reload lets the user clear it without waiting for the timeout,
-        and also picks up automation rules edited in the UI.
+        Keys come from the SQLite settings table first (set via the
+        dashboard) and fall back to the env-var values that
+        load_config() captured at process start.  Calling this on
+        reload picks up keys the operator just typed into the web UI.
+        """
+        anthropic_key, groq_key = resolved_api_keys(
+            self._db,
+            env_anthropic=self._config.anthropic_api_key,
+            env_groq=self._config.groq_api_key,
+        )
+        self._llm = LLMClient(
+            config=self._config.llm,
+            anthropic_api_key=anthropic_key,
+            groq_api_key=groq_key,
+        )
+        if _CLOUD_VISION_AVAILABLE and (anthropic_key or groq_key):
+            self._cloud_vision = CloudVision(
+                anthropic_api_key=anthropic_key,
+                groq_api_key=groq_key,
+                anthropic_model=self._config.llm.default_model,
+                groq_model=self._config.llm.groq_vision_model,
+            )
+        else:
+            self._cloud_vision = None
+        logger.info(
+            "brain_llm_clients_built",
+            llm_available=self._llm.is_available,
+            llm_provider=self._llm.provider,
+            cloud_vision=self._cloud_vision is not None,
+        )
+
+    async def _on_reload(self, data: dict) -> None:
+        """Soft-reload: reset LLM circuit breaker + rebuild LLM clients
+        from current settings + reload automation rules.
+
+        The circuit breaker can latch open after a transient API outage.
+        A soft reload also picks up new API keys the operator just typed
+        into the dashboard, and automation rules edited in the UI.
         """
         async def _do() -> None:
-            # Force the LLM circuit breaker back to CLOSED so the next call
-            # actually tries the API instead of fast-failing.
+            # Pick up any newly-saved API keys from the settings table.
+            self._build_llm_clients()
+            # Force the LLM circuit breaker back to CLOSED so the next
+            # call actually tries the API instead of fast-failing.
             if self._llm and hasattr(self._llm, "_breaker"):
                 self._llm._breaker.record_success()  # noqa: SLF001
             # Reload the identity linker's stale-timeout bookkeeping.

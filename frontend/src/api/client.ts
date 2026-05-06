@@ -54,10 +54,30 @@ async function request<T>(
       // Do NOT clear + reload — that loops forever with no login UI.
       authFailHandlers.forEach((h) => h());
     }
-    throw new ApiError(
-      response.status,
-      `API error: ${response.status} ${response.statusText}`,
-    );
+    // Surface the FastAPI `detail` field when present so callers see
+    // the actual error ("Face detector not available", "Multiple faces
+    // detected", etc.) rather than a bare HTTP status.
+    let detail: string | null = null;
+    try {
+      const body = await response.clone().json();
+      if (body && typeof body.detail === "string") {
+        detail = body.detail;
+      } else if (typeof body === "string") {
+        detail = body;
+      }
+    } catch {
+      // not JSON — try plain text
+      try {
+        const text = await response.text();
+        if (text) detail = text;
+      } catch {
+        // give up; we'll fall back to the status line
+      }
+    }
+    const message = detail
+      ? `${response.status} ${response.statusText}: ${detail}`
+      : `API error: ${response.status} ${response.statusText}`;
+    throw new ApiError(response.status, message);
   }
 
   return response.json();
