@@ -159,7 +159,8 @@ export default function SettingsPage() {
       setKeysSaved(`Saved: ${result.updated.join(", ")}`);
       await refreshConfig();
     } catch (e) {
-      setKeysError("Save failed. Server may be offline.");
+      const detail = e instanceof Error ? e.message : "Server may be offline.";
+      setKeysError(`Save failed -- ${detail}`);
     } finally {
       setKeysSaving(false);
     }
@@ -173,8 +174,9 @@ export default function SettingsPage() {
       await api.post("/settings/api_keys", { [field]: "" });
       setKeysSaved(`Cleared: ${field}`);
       await refreshConfig();
-    } catch {
-      setKeysError("Clear failed. Server may be offline.");
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : "Server may be offline.";
+      setKeysError(`Clear failed -- ${detail}`);
     } finally {
       setKeysSaving(false);
     }

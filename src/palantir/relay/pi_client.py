@@ -97,6 +97,16 @@ class _MicCapture:
                 logger.debug("mic_stop_failed", exc_info=True)
             self._stream = None
 
+    def drain(self) -> None:
+        """Discard any chunks currently queued.  Called on privacy engage
+        so audio captured before the switch was thrown can't leak out
+        when the user disengages."""
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                return
+
     async def chunks(self) -> "asyncio.AsyncIterator[bytes]":
         loop = asyncio.get_running_loop()
         while self._running:
@@ -137,6 +147,12 @@ class _CameraBase:
     def latest(self) -> Optional[bytes]:
         with self._lock:
             return self._latest_jpeg
+
+    def drain(self) -> None:
+        """Forget the last captured frame.  Called on privacy engage so a
+        frame captured before the switch was thrown isn't sent later."""
+        with self._lock:
+            self._latest_jpeg = None
 
 
 class _USBCameraCapture(_CameraBase):
@@ -524,19 +540,23 @@ class PiRelayClient:
 
     def _on_privacy_change(self, engaged: bool) -> None:
         self._privacy_engaged = engaged
-        # Pause sensor streams locally so no audio/video EVER leaves the
-        # Pi while privacy is engaged — separate from any laptop-side
-        # honour-the-event handling.
+        # The pump tasks check `self._privacy_engaged` and skip every
+        # chunk while it's True, so no audio/video bytes leave the Pi
+        # during a privacy hold.  We deliberately do NOT stop the mic
+        # or camera devices: doing so terminated `_MicCapture.chunks()`,
+        # which exited `_pump_audio`, which tripped the
+        # `asyncio.wait(FIRST_COMPLETED)` in `_session()`, which tore
+        # down the WebSocket -- so a privacy toggle was reconnecting
+        # the relay every time.
+        #
+        # While privacy is engaged we still drain the buffers so a
+        # "before/during" chunk that was queued doesn't get sent later
+        # when the user disengages.
         if engaged:
             if self._mic is not None:
-                self._mic.stop()
+                self._mic.drain()
             if self._cam is not None:
-                self._cam.stop()
-        else:
-            if self._mic is not None and not self.no_audio_in:
-                self._mic.start()
-            if self._cam is not None and not self.no_video:
-                self._cam.start()
+                self._cam.drain()
 
     # ----- Network loop -------------------------------------------------------
 

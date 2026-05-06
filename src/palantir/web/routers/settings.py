@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import secrets as _secrets
 import sqlite3
 
 import redis.asyncio as aioredis
@@ -136,10 +136,18 @@ async def set_api_keys(
         )
 
     # Tell the brain service to re-read the keys.  Targeted reload --
-    # other services don't care about API keys.
-    await redis.publish(
+    # other services don't care about API keys.  Must match the shape
+    # `handle_reload_request` expects: {reload_id, services}.  Anything
+    # else and the receiving service silently ignores the message.
+    reload_id = _secrets.token_hex(8)
+    await publish(
+        redis,
         Channels.SYSTEM_RELOAD,
-        json.dumps({"target": "brain", "reason": "api_keys_updated"}),
+        {
+            "reload_id": reload_id,
+            "services": ["brain"],
+            "reason": "api_keys_updated",
+        },
     )
 
-    return {"updated": changed}
+    return {"updated": changed, "reload_id": reload_id}

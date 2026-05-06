@@ -69,6 +69,11 @@ class AudioService:
         self._privacy_mode = False
         self._running = False
         self._start_time = time.monotonic()
+        # The pump that drains audio chunks into wake-word/VAD.  Kept
+        # on `self` (not a local in run()) so the soft-reload handler
+        # can cancel + recreate it when the capture is swapped --
+        # otherwise the new capture has no dispatcher attached.
+        self._dispatch_task: asyncio.Task | None = None
 
         # Pipeline components
         self._wake_word: WakeWordDetector | None = None
@@ -322,6 +327,11 @@ class AudioService:
                 )
                 self._capture.add_callback(self._on_audio_chunk)
                 self._capture.start()
+                # Without this re-spawn the new capture has no
+                # dispatcher attached: the OLD task was still pumping
+                # the OLD (now-stopped) capture, which yields nothing
+                # forever in relay mode.
+                self._spawn_dispatch_task()
             await self._publish_status(healthy=True)
 
         await handle_reload_request(self._redis, "audio", data, _do)
@@ -341,24 +351,39 @@ class AudioService:
         )
         await publish(self._redis, Channels.SYSTEM_STATUS, status)
 
+    def _spawn_dispatch_task(self) -> None:
+        """(Re)spawn the dispatcher that drains the current capture into
+        wake-word/VAD.  Called at start-up and whenever `_on_reload`
+        swaps `self._capture` for a fresh instance."""
+        # Cancel an in-flight dispatcher that's reading the OLD capture.
+        old = self._dispatch_task
+        if old is not None and not old.done():
+            old.cancel()
+        if self._capture is None:
+            self._dispatch_task = None
+            return
+        self._dispatch_task = asyncio.create_task(
+            self._capture.run_dispatch_loop()
+        )
+
     async def run(self) -> None:
         await self.start()
-        dispatch_task: asyncio.Task | None = None
         try:
             if self._capture:
-                dispatch_task = asyncio.create_task(self._capture.run_dispatch_loop())
+                self._spawn_dispatch_task()
                 while self._running:
                     await self._publish_status(healthy=True)
                     await asyncio.sleep(10)
         except asyncio.CancelledError:
             pass
         finally:
-            if dispatch_task is not None:
-                dispatch_task.cancel()
+            if self._dispatch_task is not None:
+                self._dispatch_task.cancel()
                 try:
-                    await dispatch_task
+                    await self._dispatch_task
                 except (asyncio.CancelledError, Exception):
                     pass
+                self._dispatch_task = None
             await self.stop()
 
     async def stop(self) -> None:
