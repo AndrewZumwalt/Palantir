@@ -2,6 +2,7 @@ import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import DashboardPage from "./components/Dashboard/DashboardPage";
 import AttendancePanel from "./components/Dashboard/AttendancePanel";
+import CameraPage from "./components/Camera/CameraPage";
 import ChatPage from "./components/Chat/ChatPage";
 import EnrollmentWizard from "./components/Enrollment/EnrollmentWizard";
 import EngagementPage from "./components/Engagement/EngagementPage";
@@ -15,6 +16,7 @@ export default function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<DashboardPage />} />
+        <Route path="camera" element={<CameraPage />} />
         <Route path="chat" element={<ChatPage />} />
         <Route path="attendance" element={<AttendancePanel />} />
         <Route path="engagement" element={<EngagementPage />} />

@@ -41,8 +41,14 @@ def _load_toml(path: Path) -> dict[str, Any]:
 @dataclass
 class CameraConfig:
     device: int = 0
-    width: int = 640
-    height: int = 480
+    # 1920x1080 is the sweet spot: every common USB webcam and the Pi
+    # CSI v2/v3 modules support it natively, JPEG-encodes well on a
+    # Pi 3B, and gives the laptop's ML stack ~4x the pixels-per-face
+    # of 640x480 -- which is what made fine-detail recognition flaky
+    # before.  Bump higher in development.toml / production.toml or
+    # via the Pi-relay --width/--height flags if your hardware allows.
+    width: int = 1920
+    height: int = 1080
     fps: int = 15
     face_detection_interval: int = 1
     engagement_interval: int = 5
