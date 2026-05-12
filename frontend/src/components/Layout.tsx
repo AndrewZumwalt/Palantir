@@ -23,6 +23,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { api, clearAuthToken } from "../api/client";
 import { JUST_AUTHED_FLAG } from "./AuthGate";
 import { ReloadOverlay } from "./ReloadOverlay";
+import { WakeIndicator } from "./WakeIndicator";
 import { LiveIndicator } from "./ui/LiveIndicator";
 import { StatusPill } from "./ui/StatusPill";
 
@@ -229,6 +230,7 @@ export default function Layout() {
     <div className={["min-h-dvh flex", rootAnim].filter(Boolean).join(" ")}>
       {flashHandoff && <div className="power-flash-in" aria-hidden="true" />}
       {flashRamp && <div className="power-flash" aria-hidden="true" />}
+      <WakeIndicator />
       {activeReload && (
         <ReloadOverlay
           reloadId={activeReload.reload_id}

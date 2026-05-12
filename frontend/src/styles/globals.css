@@ -356,6 +356,31 @@ body::before {
     100% { opacity: 0; }
   }
 
+  /* Wake-word indicator: brief pulse that scales in, glows, then fades.
+     Hold the visible state for the bulk of the animation so the operator
+     can actually read "WAKE WORD HEARD" before it disappears (the
+     2500ms auto-dismiss in WakeIndicator handles unmount). */
+  .wake-pulse {
+    animation: wake-pulse 0.6s var(--ease-out-expo) both;
+  }
+  @keyframes wake-pulse {
+    0% {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.92);
+      filter: brightness(1.6);
+    }
+    50% {
+      opacity: 1;
+      transform: translateY(0) scale(1.04);
+      filter: brightness(1.2);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: brightness(1);
+    }
+  }
+
   /* Decode-in — used for staggered entrance of page sections after login.
      Slide up + fade + de-blur. Subtle; finishes in 450ms so the UI is
      fully usable after ~half a second. */

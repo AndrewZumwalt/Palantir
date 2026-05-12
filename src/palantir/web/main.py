@@ -130,6 +130,13 @@ async def lifespan(app: FastAPI):
         Channels.SYSTEM_PRIVACY,
         Channels.SYSTEM_RELOAD_PROGRESS,
         Channels.EVENTS_LOG,
+        # Wake word detections.  The audio service publishes a
+        # WakeWordEvent here every time openwakeword crosses the
+        # threshold; the dashboard flashes a visual indicator so the
+        # operator can tell the trigger actually fired (otherwise the
+        # only signal that "hey jarvis" was heard is the brain's reply
+        # ~3-5 s later, which is a long time to wait wondering).
+        Channels.AUDIO_WAKE,
     ]
     for channel in bridge_channels:
 
