@@ -37,6 +37,12 @@ voice = [
     "openwakeword>=0.6.0",
     "piper-tts>=1.2.0",
     "onnxruntime>=1.19.0",
+    # Microsoft Edge neural TTS (free, natural-sounding) -- the default
+    # TTS engine.  Pulls audio over the network from Microsoft's public
+    # Edge endpoint, so internet required.  miniaudio decodes the MP3
+    # response to int16 PCM with no ffmpeg dependency.
+    "edge-tts>=7.0.0",
+    "miniaudio>=1.59",
 ]
 # Phase 3: Facial recognition
 face = [

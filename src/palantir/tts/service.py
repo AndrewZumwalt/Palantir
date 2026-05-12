@@ -20,6 +20,7 @@ from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publ
 from palantir.reload import handle_reload_request
 
 from .audio_output import AudioOutput, create_audio_output
+from .edge_engine import make_engine
 from .piper_engine import PiperEngine
 
 logger = structlog.get_logger()
@@ -38,7 +39,9 @@ class TTSService:
         self._speech_queue: asyncio.Queue[str] = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        # TTS components
+        # TTS components.  Typed as the broader base for documentation;
+        # at runtime it's whichever engine make_engine() picks (Edge or
+        # Piper) based on config.tts.engine.
         self._engine: PiperEngine | None = None
         self._output: AudioOutput | None = None
 
@@ -53,8 +56,11 @@ class TTSService:
         privacy = await self._redis.get(Keys.PRIVACY_MODE)
         self._privacy_mode = privacy == "1"
 
-        # Initialize TTS engine and audio output (local speaker OR relay-to-Pi)
-        self._engine = PiperEngine(self._config.tts)
+        # Initialize TTS engine and audio output (local speaker OR relay-to-Pi).
+        # make_engine respects config.tts.engine: "edge" (default, natural
+        # Microsoft neural voices, needs internet) or "piper" (local but
+        # robotic; needs the voice .onnx pre-downloaded).
+        self._engine = make_engine(self._config.tts)
         relay_mode = self._config.relay.mode == "relay"
         self._output = create_audio_output(
             relay_mode=relay_mode,

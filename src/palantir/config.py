@@ -61,7 +61,22 @@ class AudioConfig:
     sample_rate: int = 16000
     channels: int = 1
     chunk_duration_ms: int = 30
-    wake_word_threshold: float = 0.7
+    # Threshold for openwakeword's confidence score (0.0-1.0).  0.5 is
+    # the package recommendation; 0.7 catches fewer false positives but
+    # also misses softer "hey jarvis"es during a demo.
+    wake_word_threshold: float = 0.5
+    # openwakeword built-in model name OR a path to a custom .onnx /
+    # .tflite trained via the openwakeword training pipeline.  The
+    # built-ins ship with the package and include:
+    #   hey_jarvis (default)
+    #   alexa
+    #   hey_mycroft
+    #   hey_rhasspy
+    # "Hey Palantir" is NOT a built-in -- training a custom wake word
+    # takes hours of synthetic data + a CPU/GPU training run.  Drop the
+    # resulting .onnx into .dev-data/models/ and point wake_word_model
+    # at the path to use it.
+    wake_word_model: str = "hey_jarvis"
     stt_model: str = "base.en"
     stt_compute_type: str = "int8"
     stt_beam_size: int = 1
@@ -95,9 +110,19 @@ class LLMConfig:
 
 @dataclass
 class TTSConfig:
-    engine: str = "piper"
-    voice: str = "en_US-lessac-medium"
-    sample_rate: int = 22050
+    # "edge"  = Microsoft Edge neural voices (natural-sounding, free,
+    #           needs internet).  Default because Piper's local voices
+    #           require pre-downloading .onnx files and sound noticeably
+    #           synthetic.
+    # "piper" = local neural TTS (offline, requires voice .onnx in
+    #           ./.dev-data/models/piper/ or system path).
+    engine: str = "edge"
+    # When engine == "edge", this is the Microsoft voice name
+    # (e.g. en-US-AriaNeural, en-US-GuyNeural, en-GB-SoniaNeural).
+    # When engine == "piper", it's the Piper voice id
+    # (e.g. en_US-lessac-medium).
+    voice: str = "en-US-AriaNeural"
+    sample_rate: int = 24000
 
 
 @dataclass

@@ -68,6 +68,7 @@ class VisionService:
     def __init__(self):
         self._config = load_config()
         self._camera: CameraCapture | None = None
+        self._current_camera_mode: str = "relay"  # updated by _reconfigure_camera
         self._redis = None
         self._binary_redis = None  # only created in relay mode
         self._subscriber: Subscriber | None = None
@@ -206,7 +207,11 @@ class VisionService:
         # doesn't drown the Redis client in JPEG encodes.  In relay mode
         # RelayCameraCapture already updates this on every incoming
         # frame, so we skip here to avoid re-encoding what the Pi sent.
-        if self._config.relay.mode != "relay":
+        # MUST read _current_camera_mode (not self._config.relay.mode) --
+        # the latter is the launcher's startup value and never updates
+        # after a runtime "START SCANNING" toggle, which would leave the
+        # Camera page showing a black box forever.
+        if self._current_camera_mode != "relay":
             now = time.monotonic()
             if now - self._last_live_frame_publish >= 1.0 / 15:
                 self._last_live_frame_publish = now
@@ -506,6 +511,13 @@ class VisionService:
             relay_mode=relay_mode,
             binary_redis=self._binary_redis,
         )
+        # Track the runtime mode so the live-frame publisher in
+        # _process_frame knows whether to JPEG-encode and push to
+        # LATEST_FRAME.  Reading self._config.relay.mode here would
+        # always return the launcher's startup value -- the Camera
+        # page would stay black after a runtime swap to local even
+        # though detection overlays are firing.
+        self._current_camera_mode = mode
         if not self._privacy_mode:
             self._camera.start()
 

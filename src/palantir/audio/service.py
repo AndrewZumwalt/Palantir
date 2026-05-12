@@ -109,7 +109,17 @@ class AudioService:
         # Initialize pipeline components
         audio_cfg = self._config.audio
 
-        self._wake_word = WakeWordDetector(threshold=audio_cfg.wake_word_threshold)
+        # Pick a custom .onnx path if the configured value looks like a
+        # file path (slash, backslash, or an .onnx/.tflite extension);
+        # otherwise treat it as a built-in model name.
+        wake_id = audio_cfg.wake_word_model
+        is_path = ("/" in wake_id or "\\" in wake_id
+                   or wake_id.endswith((".onnx", ".tflite")))
+        self._wake_word = WakeWordDetector(
+            threshold=audio_cfg.wake_word_threshold,
+            model_name=None if is_path else wake_id,
+            custom_model_path=wake_id if is_path else None,
+        )
         self._wake_word.on_wake(self._on_wake_word)
 
         if _VAD_AVAILABLE:

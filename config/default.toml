@@ -15,7 +15,11 @@ device = "default"
 sample_rate = 16000
 channels = 1
 chunk_duration_ms = 30            # audio chunk size for wake word
-wake_word_threshold = 0.7
+wake_word_threshold = 0.5            # 0.7 was too strict during demos
+# Built-in openwakeword model.  Options: hey_jarvis (default), alexa,
+# hey_mycroft, hey_rhasspy.  Set to a path (e.g. ./.dev-data/models/hey_palantir.onnx)
+# to use a custom-trained model.
+wake_word_model = "hey_jarvis"
 stt_model = "base.en"
 stt_compute_type = "int8"
 stt_beam_size = 1
@@ -37,9 +41,20 @@ enable_prompt_caching = true
 temperature = 0.7
 
 [tts]
-engine = "piper"
-voice = "en_US-lessac-medium"
-sample_rate = 22050
+# Default to Microsoft Edge's neural TTS -- free, no API key, audibly
+# more natural than Piper's local voices.  Needs internet.  Fall back
+# to "piper" for fully-offline operation (requires the voice .onnx
+# placed under .dev-data/models/piper/ first).
+engine = "edge"
+# Edge voice id.  Other good defaults:
+#   en-US-AriaNeural        female, warm (classroom-friendly)
+#   en-US-GuyNeural         male, casual
+#   en-US-JennyNeural       female, professional
+#   en-GB-RyanNeural        British male
+#   en-GB-SoniaNeural       British female
+# Run `edge-tts --list-voices` for the full catalogue.
+voice = "en-US-AriaNeural"
+sample_rate = 24000
 
 [web]
 host = "0.0.0.0"
