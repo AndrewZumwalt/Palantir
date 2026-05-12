@@ -21,6 +21,12 @@ export default function DashboardPage() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [attendance, setAttendance] = useState<AttendanceData | null>(null);
   const [privacyMode, setPrivacyMode] = useState(false);
+  // Live count of faces currently detected in the camera frame. Fed by the
+  // `vision:faces` channel — covers anonymous + enrolled people and updates
+  // every detection cycle, so people entering/leaving the frame move it
+  // immediately. `attendance.count` (the enrolled-people set) is too slow:
+  // it carries a 5-minute exit timeout and was only fetched on mount.
+  const [facesInFrame, setFacesInFrame] = useState<number>(0);
   const { connected, subscribe } = useWebSocket();
 
   useEffect(() => {
@@ -42,6 +48,14 @@ export default function DashboardPage() {
       }
     });
     return unsub;
+  }, [subscribe]);
+
+  useEffect(() => {
+    const offFaces = subscribe("vision:faces", (data) => {
+      const list = Array.isArray(data.faces) ? data.faces : [];
+      setFacesInFrame(list.length);
+    });
+    return offFaces;
   }, [subscribe]);
 
   const togglePrivacy = useCallback(async () => {
@@ -90,7 +104,7 @@ export default function DashboardPage() {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
           <MetricKPI
             label="Subjects in frame"
-            value={attendance?.count ?? 0}
+            value={facesInFrame}
             unit="persons"
             tone="amber"
             foot={
@@ -143,8 +157,8 @@ export default function DashboardPage() {
         <SystemStat
           icon={<Users className="w-3.5 h-3.5" />}
           label="REGISTRY"
-          value={`${attendance?.count ?? 0} active`}
-          ok={(attendance?.count ?? 0) > 0}
+          value={`${facesInFrame} active`}
+          ok={facesInFrame > 0}
         />
         <SystemStat
           icon={<EyeOff className="w-3.5 h-3.5" />}

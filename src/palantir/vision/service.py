@@ -258,13 +258,10 @@ class VisionService:
             None, self._face_detector.detect, frame
         )
 
-        # Even when no faces are detected we still need to prune stale
-        # visible_persons entries -- otherwise an empty room keeps
-        # advertising whoever was last seen.
-        if not detections:
-            await self._prune_stale_visible()
-            return
-
+        # Always publish, even with zero detections: the dashboard's
+        # "Subjects in frame" count subscribes to this channel and stays
+        # sticky on the last non-empty value if we skip empty frames --
+        # so a person walking out of view leaves the count frozen.
         detected_faces = []
         for det in detections:
             face_msg = DetectedFace(
