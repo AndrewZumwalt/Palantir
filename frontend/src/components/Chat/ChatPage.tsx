@@ -1,6 +1,7 @@
-import { MessageSquare, Send, User } from "lucide-react";
+import { Activity, MessageSquare, Mic, Radio, Send, User } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api/client";
+import { useWebSocket } from "../../hooks/useWebSocket";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { LiveIndicator } from "../ui/LiveIndicator";
@@ -20,6 +21,15 @@ interface HistoryResponse {
   turns: ChatTurn[];
 }
 
+interface LiveTurn {
+  text: string;
+  source: string;
+  created_at: string;
+  assistant_text?: string;
+}
+
+type VoicePhase = "idle" | "listening" | "transcribing" | "heard" | "empty" | "error";
+
 const POLL_INTERVAL_MS = 1500;
 
 function formatTimestamp(ts: string): string {
@@ -33,10 +43,16 @@ function formatTimestamp(ts: string): string {
 }
 
 export default function ChatPage() {
+  const { connected, subscribe } = useWebSocket();
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
+  const [micLevel, setMicLevel] = useState(0);
+  const [lastHeard, setLastHeard] = useState<string | null>(null);
+  const [voiceMessage, setVoiceMessage] = useState<string | null>(null);
+  const [liveTurn, setLiveTurn] = useState<LiveTurn | null>(null);
   // When we send a message we expect a new turn to appear; track the last
   // seen id so we can show a subtle "waiting for reply" hint until it does.
   const [pendingSince, setPendingSince] = useState<number | null>(null);
@@ -59,12 +75,83 @@ export default function ChatPage() {
           setPendingSince(null);
         }
       }
+      setLiveTurn((current) => {
+        if (!current) return current;
+        const landed = list.some((turn) => turn.user_text === current.text);
+        return landed ? null : current;
+      });
       setError(null);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Failed to load history";
       setError(message);
     }
   }, [pendingSince]);
+
+  useEffect(() => {
+    const offState = subscribe("audio:state", (data) => {
+      const state = typeof data.state === "string" ? data.state : "idle";
+      if (
+        state === "listening" ||
+        state === "transcribing" ||
+        state === "heard" ||
+        state === "empty" ||
+        state === "error" ||
+        state === "idle"
+      ) {
+        setVoicePhase(state);
+      }
+      if (typeof data.text === "string" && data.text.trim()) {
+        setLastHeard(data.text);
+      }
+      if (typeof data.message === "string") {
+        setVoiceMessage(data.message);
+      } else if (state === "idle") {
+        setVoiceMessage(null);
+      }
+    });
+    const offLevel = subscribe("audio:level", (data) => {
+      const level =
+        typeof data.rms === "number"
+          ? data.rms
+          : typeof data.level === "number"
+            ? data.level
+            : 0;
+      setMicLevel(Math.max(0, Math.min(1, level)));
+      if (data.listening === true) {
+        setVoicePhase((current) =>
+          current === "idle" ? "listening" : current,
+        );
+      }
+    });
+    const offUtterance = subscribe("audio:utterance", (data) => {
+      const text = typeof data.text === "string" ? data.text.trim() : "";
+      if (!text) return;
+      const source = typeof data.source === "string" ? data.source : "voice";
+      const created_at =
+        typeof data.timestamp === "string"
+          ? data.timestamp
+          : new Date().toISOString();
+      setLastHeard(text);
+      setLiveTurn({ text, source, created_at });
+      setPendingSince(lastIdRef.current);
+      loadHistory();
+    });
+    const offResponse = subscribe("brain:response", (data) => {
+      const text = typeof data.text === "string" ? data.text.trim() : "";
+      if (!text) return;
+      setLiveTurn((current) =>
+        current ? { ...current, assistant_text: text } : current,
+      );
+      setPendingSince(null);
+      loadHistory();
+    });
+    return () => {
+      offState();
+      offLevel();
+      offUtterance();
+      offResponse();
+    };
+  }, [loadHistory, subscribe]);
 
   // Initial load + polling.
   useEffect(() => {
@@ -136,6 +223,62 @@ export default function ChatPage() {
       </div>
 
       <Panel
+        title="Voice pipeline"
+        label="MIC"
+        meta={
+          <StatusPill
+            tone={connected ? (voicePhase === "error" ? "red" : "cyan") : "gray"}
+            size="xs"
+            pulse={voicePhase === "listening" || voicePhase === "transcribing"}
+          >
+            {connected ? voicePhase.toUpperCase() : "OFFLINE"}
+          </StatusPill>
+        }
+      >
+        <div className="grid gap-3 md:grid-cols-[220px_1fr] md:items-center">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 border border-cyan-700/50 bg-cyan-500/10 flex items-center justify-center">
+              {voicePhase === "listening" ? (
+                <Mic className="w-4 h-4 text-cyan-300" />
+              ) : (
+                <Radio className="w-4 h-4 text-cyan-300" />
+              )}
+            </div>
+            <div className="min-w-0">
+              <div className="font-data text-[10px] uppercase tracking-[0.18em] text-gray-500">
+                input level
+              </div>
+              <div className="font-data text-xs text-gray-200">
+                {Math.round(micLevel * 100).toString().padStart(2, "0")}%
+              </div>
+            </div>
+          </div>
+          <div>
+            <div className="h-2 bg-[#05080f] border border-[#1c2540] overflow-hidden">
+              <div
+                className="h-full bg-cyan-400 transition-all"
+                style={{ width: `${Math.min(100, micLevel * 180)}%` }}
+              />
+            </div>
+            <div className="mt-2 text-xs text-gray-400 min-h-5">
+              {lastHeard ? (
+                <>
+                  <span className="font-data uppercase tracking-[0.14em] text-amber-400">
+                    heard
+                  </span>{" "}
+                  {lastHeard}
+                </>
+              ) : voiceMessage ? (
+                voiceMessage
+              ) : (
+                "Waiting for wake word or typed input."
+              )}
+            </div>
+          </div>
+        </div>
+      </Panel>
+
+      <Panel
         title="Transcript"
         label="I/O"
         meta={
@@ -148,7 +291,7 @@ export default function ChatPage() {
           ref={scrollRef}
           className="max-h-[60vh] min-h-[280px] overflow-y-auto px-4 py-4 space-y-4"
         >
-          {ordered.length === 0 ? (
+          {ordered.length === 0 && !liveTurn ? (
             <EmptyState
               title="No conversation yet"
               description="Speak the wake word, or type a message below to start."
@@ -171,8 +314,27 @@ export default function ChatPage() {
               </div>
             ))
           )}
+          {liveTurn && (
+            <div className="space-y-2">
+              <Bubble
+                side="user"
+                who={liveTurn.source === "voice" ? "Mic input" : "Typed input"}
+                text={liveTurn.text}
+                timestamp={liveTurn.created_at}
+              />
+              {liveTurn.assistant_text && (
+                <Bubble
+                  side="assistant"
+                  who="Palantir"
+                  text={liveTurn.assistant_text}
+                  timestamp={new Date().toISOString()}
+                />
+              )}
+            </div>
+          )}
           {pendingSince !== null && (
-            <div className="text-xs font-data uppercase tracking-[0.18em] text-amber-500/70 pl-2">
+            <div className="flex items-center gap-2 text-xs font-data uppercase tracking-[0.18em] text-amber-500/70 pl-2">
+              <Activity className="w-3 h-3" />
               // awaiting reply...
             </div>
           )}

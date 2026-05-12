@@ -3,6 +3,7 @@ import {
   Check,
   ChevronRight,
   Fingerprint,
+  RefreshCw,
   Shield,
   Trash2,
   UserPlus,
@@ -59,6 +60,9 @@ export default function EnrollmentWizard() {
   const [faceDetectionAvailable, setFaceDetectionAvailable] = useState<
     boolean | null
   >(null);
+  const [browserCameras, setBrowserCameras] = useState<MediaDeviceInfo[]>([]);
+  const [selectedBrowserCameraId, setSelectedBrowserCameraId] = useState("");
+  const [cameraRefreshing, setCameraRefreshing] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -81,13 +85,46 @@ export default function EnrollmentWizard() {
       .catch(() => setFaceDetectionAvailable(null));
   }, [loadPersons]);
 
-  const startCamera = useCallback(async () => {
+  const refreshBrowserCameras = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    setCameraRefreshing(true);
     try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cameras = devices.filter((device) => device.kind === "videoinput");
+      setBrowserCameras(cameras);
+      if (!selectedBrowserCameraId && cameras[0]?.deviceId) {
+        setSelectedBrowserCameraId(cameras[0].deviceId);
+      }
+    } finally {
+      setCameraRefreshing(false);
+    }
+  }, [selectedBrowserCameraId]);
+
+  useEffect(() => {
+    refreshBrowserCameras();
+  }, [refreshBrowserCameras]);
+
+  const startCamera = useCallback(async (deviceId?: string) => {
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      const requestedDevice = deviceId ?? selectedBrowserCameraId;
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: "user" },
+        video: requestedDevice
+          ? {
+              deviceId: { exact: requestedDevice },
+              width: { ideal: 640 },
+              height: { ideal: 480 },
+            }
+          : { width: 640, height: 480, facingMode: "user" },
       });
       streamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
+      const activeDeviceId = stream.getVideoTracks()[0]?.getSettings().deviceId;
+      if (activeDeviceId) setSelectedBrowserCameraId(activeDeviceId);
+      refreshBrowserCameras();
     } catch (e) {
       // getUserMedia rejects with a DOMException whose `name` distinguishes
       // permission-denied from camera-in-use from no-camera-found.  The
@@ -107,7 +144,7 @@ export default function EnrollmentWizard() {
           : `Could not start camera (${err.name || "unknown error"}: ${err.message || "no details"}).`;
       alert(reason);
     }
-  }, []);
+  }, [refreshBrowserCameras, selectedBrowserCameraId]);
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -443,6 +480,37 @@ export default function EnrollmentWizard() {
             className="h-full bg-amber-500 transition-all"
             style={{ width: `${pct}%` }}
           />
+        </div>
+
+        <div className="grid grid-cols-[1fr_auto] gap-2 mb-4">
+          <Select
+            aria-label="Enrollment camera"
+            value={selectedBrowserCameraId}
+            onChange={(e) => {
+              const next = e.target.value;
+              setSelectedBrowserCameraId(next);
+              startCamera(next);
+            }}
+          >
+            {browserCameras.length === 0 && (
+              <option value="">Default browser camera</option>
+            )}
+            {browserCameras.map((device, index) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {device.label || `Camera ${index + 1}`}
+              </option>
+            ))}
+          </Select>
+          <Button
+            type="button"
+            aria-label="Refresh browser cameras"
+            title="Refresh browser cameras"
+            loading={cameraRefreshing}
+            disabled={cameraRefreshing}
+            onClick={refreshBrowserCameras}
+          >
+            <RefreshCw className="w-4 h-4" />
+          </Button>
         </div>
 
         <div className="relative bg-black border border-[#1c2540] overflow-hidden">

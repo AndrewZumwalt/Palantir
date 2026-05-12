@@ -137,6 +137,10 @@ async def lifespan(app: FastAPI):
         # only signal that "hey jarvis" was heard is the brain's reply
         # ~3-5 s later, which is a long time to wait wondering).
         Channels.AUDIO_WAKE,
+        Channels.AUDIO_STATE,
+        Channels.AUDIO_LEVEL,
+        Channels.AUDIO_UTTERANCE,
+        Channels.BRAIN_RESPONSE,
     ]
     for channel in bridge_channels:
 

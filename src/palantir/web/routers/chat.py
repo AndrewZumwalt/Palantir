@@ -91,6 +91,7 @@ async def send_text_message(
         text=text,
         speaker_embedding=None,
         duration_seconds=0.0,
+        source="typed",
         timestamp=datetime.now(),
     )
     await publish(redis, Channels.AUDIO_UTTERANCE, utterance)

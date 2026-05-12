@@ -27,15 +27,17 @@ param(
     [string]$AnthropicKey = $env:ANTHROPIC_API_KEY,
     [string]$GroqKey      = $env:GROQ_API_KEY,
     [string]$DataDir,
-    [switch]$LocalMode,      # shorthand: audio + vision both use laptop hardware
+    [switch]$LocalMode,      # shorthand: audio + vision + TTS use laptop hardware
     [switch]$LocalAudio,     # audio service uses laptop microphone
     [switch]$LocalVision,    # vision service uses laptop webcam (BLOCKS browser enrollment on Windows -- the OS doesn't share cameras)
+    [switch]$LocalTts,       # TTS service plays through laptop speakers
+    [switch]$RelayTts,       # force TTS audio to the Pi relay instead
     [switch]$NoFakeRedis,    # talk to a real Redis (default: Memurai on 127.0.0.1:6379)
     [switch]$WithMl,         # include the [ml] extras (insightface/torch/whisper/yolo) -- needs MSVC Build Tools
     [switch]$Reinstall,      # force pip install -e even if the package is already present (slow on Windows)
     [string]$PythonExe       # explicit Python interpreter; default = `py -3.11`
 )
-if ($LocalMode) { $LocalAudio = $true; $LocalVision = $true }
+if ($LocalMode) { $LocalAudio = $true; $LocalVision = $true; $LocalTts = $true }
 
 $ErrorActionPreference = "Stop"
 
@@ -199,7 +201,8 @@ if (-not $AuthToken) { $AuthToken = "devtoken" }
 Write-Host "[4/4] Starting services..." -ForegroundColor Cyan
 $audioMode  = if ($LocalAudio)  { "local" } else { "relay" }
 $visionMode = if ($LocalVision) { "local" } else { "relay" }
-$relayDesc  = "audio=$audioMode, vision=$visionMode"
+$ttsMode    = if ($RelayTts) { "relay" } elseif ($LocalTts -or $LocalAudio) { "local" } else { "relay" }
+$relayDesc  = "audio=$audioMode, vision=$visionMode, tts=$ttsMode"
 # Redis: every service needs to share a real Redis-protocol broker.  An
 # in-process fakeredis is per-process, and fakeredis.TcpFakeServer's pub/sub
 # is broken on Windows (no fcntl -> handler thread blocks in readline() and
@@ -299,6 +302,7 @@ try {
         switch ($svc) {
             "palantir-audio"  { [Environment]::SetEnvironmentVariable("PALANTIR_RELAY_MODE", $audioMode,  "Process") }
             "palantir-vision" { [Environment]::SetEnvironmentVariable("PALANTIR_RELAY_MODE", $visionMode, "Process") }
+            "palantir-tts"    { [Environment]::SetEnvironmentVariable("PALANTIR_RELAY_MODE", $ttsMode,    "Process") }
             default           { [Environment]::SetEnvironmentVariable("PALANTIR_RELAY_MODE", "relay",     "Process") }
         }
         Write-Host ("  -> $svc") -ForegroundColor DarkCyan

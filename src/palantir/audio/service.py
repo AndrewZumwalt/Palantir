@@ -86,6 +86,8 @@ class AudioService:
         self._listening_for_utterance = False
         self._utterance_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._last_level_publish = 0.0
+        self._last_audio_level = 0.0
 
     async def start(self) -> None:
         """Initialize and start all audio pipeline components."""
@@ -167,10 +169,76 @@ class AudioService:
         )
         await self._publish_status(healthy=True)
 
+    def _publish_level_from_audio(self, chunk: np.ndarray) -> None:
+        """Publish a throttled mic level for the dashboard meter."""
+        now = time.monotonic()
+        if now - self._last_level_publish < 0.2:
+            return
+        self._last_level_publish = now
+
+        if chunk.size == 0:
+            rms = 0.0
+            peak = 0.0
+        else:
+            audio = chunk.astype(np.float32)
+            rms = float(np.sqrt(np.mean(np.square(audio))) / 32768.0)
+            peak = float(np.max(np.abs(audio)) / 32768.0)
+        rms = max(0.0, min(1.0, rms))
+        peak = max(0.0, min(1.0, peak))
+        self._last_audio_level = rms
+
+        if not self._loop or not self._redis:
+            return
+        self._publish_audio_state_threadsafe(
+            "level",
+            channel=Channels.AUDIO_LEVEL,
+            rms=rms,
+            peak=peak,
+            listening=self._listening_for_utterance,
+            speech_detected=(
+                self._vad.speech_detected
+                if self._vad and self._listening_for_utterance
+                else False
+            ),
+        )
+
+    def _publish_audio_state_threadsafe(
+        self,
+        state: str,
+        *,
+        channel: str = Channels.AUDIO_STATE,
+        **data,
+    ) -> None:
+        if not self._loop or not self._redis:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._publish_audio_state(state, channel=channel, **data),
+            self._loop,
+        )
+
+    async def _publish_audio_state(
+        self,
+        state: str,
+        *,
+        channel: str = Channels.AUDIO_STATE,
+        **data,
+    ) -> None:
+        if not self._redis:
+            return
+        payload = {
+            "state": state,
+            "listening": self._listening_for_utterance,
+            "level": self._last_audio_level,
+            **data,
+        }
+        await publish(self._redis, channel, payload)
+
     def _on_audio_chunk(self, chunk: np.ndarray) -> None:
         """Handle a raw audio chunk from the microphone."""
         if self._privacy_mode:
             return
+
+        self._publish_level_from_audio(chunk)
 
         if self._listening_for_utterance and self._vad:
             # Feed audio to VAD to capture the utterance
@@ -182,6 +250,17 @@ class AudioService:
                     asyncio.run_coroutine_threadsafe(
                         self._process_utterance(utterance), self._loop
                     )
+            elif not self._vad.is_recording:
+                # VAD uses None for both "still recording" and "gave up
+                # without speech".  When it has stopped recording, re-arm
+                # wake-word detection instead of getting stuck forever.
+                self._listening_for_utterance = False
+                if self._wake_word:
+                    self._wake_word.reset()
+                self._publish_audio_state_threadsafe(
+                    "empty",
+                    message="No speech detected after wake word",
+                )
         else:
             # Feed audio to wake word detector
             if self._wake_word:
@@ -205,90 +284,128 @@ class AudioService:
             asyncio.run_coroutine_threadsafe(
                 publish(self._redis, Channels.AUDIO_WAKE, event), self._loop
             )
+            self._publish_audio_state_threadsafe(
+                "listening",
+                confidence=confidence,
+                message="Wake word heard",
+            )
 
     async def _process_utterance(self, audio: np.ndarray) -> None:
         """Transcribe an utterance and publish the result."""
-        if not self._stt:
-            logger.warning("stt_not_available")
-            return
+        try:
+            if not self._stt:
+                logger.warning("stt_not_available")
+                await self._publish_audio_state(
+                    "error",
+                    message="Speech-to-text is not available",
+                )
+                return
 
-        # Run STT in executor to avoid blocking the event loop
-        loop = asyncio.get_running_loop()
-        text = await loop.run_in_executor(
-            None, self._stt.transcribe, audio, self._config.audio.sample_rate
-        )
+            await self._publish_audio_state(
+                "transcribing",
+                duration_seconds=round(len(audio) / self._config.audio.sample_rate, 2),
+            )
 
-        if not text:
-            logger.debug("utterance_empty_transcription")
+            # Run STT in executor to avoid blocking the event loop
+            loop = asyncio.get_running_loop()
+            text = await loop.run_in_executor(
+                None, self._stt.transcribe, audio, self._config.audio.sample_rate
+            )
+
+            if not text:
+                logger.debug("utterance_empty_transcription")
+                await self._publish_audio_state(
+                    "empty",
+                    message="Speech-to-text returned no text",
+                )
+                return
+
+            duration = len(audio) / self._config.audio.sample_rate
+            await self._publish_audio_state(
+                "heard",
+                text=text,
+                duration_seconds=round(duration, 2),
+            )
+
+            # Extract speaker embedding (in parallel concept, but sequentially for CPU)
+            speaker_embedding = None
+            if self._speaker_id and self._speaker_id.is_available:
+                speaker_embedding = await loop.run_in_executor(
+                    None,
+                    self._speaker_id.extract_embedding,
+                    audio,
+                    self._config.audio.sample_rate,
+                )
+
+            # Identify speaker
+            speaker_person_id = None
+            speaker_name = None
+            speaker_confidence = 0.0
+
+            if speaker_embedding is not None and self._speaker_id:
+                match = self._speaker_id.identify(speaker_embedding)
+                if match.matched:
+                    speaker_person_id = match.person_id
+                    speaker_name = match.name
+                    speaker_confidence = match.confidence
+                    logger.info(
+                        "speaker_identified",
+                        name=match.name,
+                        confidence=match.confidence,
+                    )
+
+                    # Publish speaker identification
+                    speaker_msg = SpeakerIdentification(
+                        person_id=match.person_id,
+                        name=match.name,
+                        confidence=match.confidence,
+                    )
+                    await publish(self._redis, Channels.AUDIO_SPEAKER_ID, speaker_msg)
+
+            # Build and publish the utterance with speaker info
+            utterance = Utterance(
+                text=text,
+                speaker_embedding=(
+                    speaker_embedding.tolist() if speaker_embedding is not None else None
+                ),
+                duration_seconds=round(duration, 2),
+                source="voice",
+            )
+
+            logger.info(
+                "utterance_published",
+                text=text[:100],
+                speaker=speaker_name or "unknown",
+                duration=round(duration, 2),
+            )
+            await publish(self._redis, Channels.AUDIO_UTTERANCE, utterance)
+
+            # Also publish speaker ID separately so brain can correlate.
+            # JSON-encode to stay robust against names that contain colons.
+            if speaker_person_id:
+                import json as _json
+
+                await self._redis.set(
+                    "state:last_speaker",
+                    _json.dumps(
+                        {
+                            "person_id": speaker_person_id,
+                            "name": speaker_name,
+                            "confidence": speaker_confidence,
+                        }
+                    ),
+                    ex=30,  # Expires after 30 seconds
+                )
+        except Exception as exc:
+            logger.exception("utterance_processing_failed")
+            await self._publish_audio_state("error", message=str(exc))
+        finally:
+            self._listening_for_utterance = False
             if self._wake_word:
                 self._wake_word.reset()
-            return
-
-        duration = len(audio) / self._config.audio.sample_rate
-
-        # Extract speaker embedding (in parallel concept, but sequentially for CPU)
-        speaker_embedding = None
-        if self._speaker_id and self._speaker_id.is_available:
-            speaker_embedding = await loop.run_in_executor(
-                None, self._speaker_id.extract_embedding, audio, self._config.audio.sample_rate
-            )
-
-        # Identify speaker
-        speaker_person_id = None
-        speaker_name = None
-        speaker_confidence = 0.0
-
-        if speaker_embedding is not None and self._speaker_id:
-            match = self._speaker_id.identify(speaker_embedding)
-            if match.matched:
-                speaker_person_id = match.person_id
-                speaker_name = match.name
-                speaker_confidence = match.confidence
-                logger.info(
-                    "speaker_identified",
-                    name=match.name,
-                    confidence=match.confidence,
-                )
-
-                # Publish speaker identification
-                speaker_msg = SpeakerIdentification(
-                    person_id=match.person_id,
-                    name=match.name,
-                    confidence=match.confidence,
-                )
-                await publish(self._redis, Channels.AUDIO_SPEAKER_ID, speaker_msg)
-
-        # Build and publish the utterance with speaker info
-        utterance = Utterance(
-            text=text,
-            speaker_embedding=speaker_embedding.tolist() if speaker_embedding is not None else None,
-            duration_seconds=round(duration, 2),
-        )
-
-        logger.info(
-            "utterance_published",
-            text=text[:100],
-            speaker=speaker_name or "unknown",
-            duration=round(duration, 2),
-        )
-        await publish(self._redis, Channels.AUDIO_UTTERANCE, utterance)
-
-        # Also publish speaker ID separately so brain can correlate.
-        # JSON-encode to stay robust against names that contain colons.
-        if speaker_person_id:
-            import json as _json
-            await self._redis.set(
-                "state:last_speaker",
-                _json.dumps({
-                    "person_id": speaker_person_id,
-                    "name": speaker_name,
-                    "confidence": speaker_confidence,
-                }),
-                ex=30,  # Expires after 30 seconds
-            )
-
-        if self._wake_word:
-            self._wake_word.reset()
+            if self._vad and self._vad.is_recording:
+                self._vad.cancel()
+            await self._publish_audio_state("idle")
 
     async def _on_privacy_toggle(self, data: dict) -> None:
         """Handle privacy mode toggle."""
@@ -301,10 +418,12 @@ class AudioService:
             self._listening_for_utterance = False
             if self._vad:
                 self._vad.cancel()
+            await self._publish_audio_state("idle", message="Privacy mode enabled")
             logger.info("audio_privacy_mode_enabled")
         else:
             if self._capture and not self._capture.is_running:
                 self._capture.start()
+            await self._publish_audio_state("idle", message="Privacy mode disabled")
             logger.info("audio_privacy_mode_disabled")
 
     async def _on_reload(self, data: dict) -> None:
@@ -355,6 +474,7 @@ class AudioService:
                 "privacy_mode": self._privacy_mode,
                 "capturing": self._capture.is_running if self._capture else False,
                 "listening": self._listening_for_utterance,
+                "audio_level": round(self._last_audio_level, 3),
                 "wake_word_active": self._wake_word.is_active if self._wake_word else False,
                 "stt_available": self._stt.is_available if self._stt else False,
             },

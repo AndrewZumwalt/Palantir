@@ -5,6 +5,7 @@ import {
   Database,
   Globe,
   Mic,
+  RefreshCw,
   Volume2,
 } from "lucide-react";
 import type { ComponentType } from "react";
@@ -12,6 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api/client";
 import { Button } from "../ui/Button";
 import { LoadingLines } from "../ui/EmptyState";
+import { Select } from "../ui/Field";
 import { MetricKPI } from "../ui/MetricKPI";
 import { Panel, SectionHeader } from "../ui/Panel";
 import { StatusPill } from "../ui/StatusPill";
@@ -161,14 +163,50 @@ function ServiceCard({ service }: { service: ServiceStatus }) {
 interface CameraScanningResponse {
   scanning: boolean;
   mode: string;
+  device: number;
+}
+
+interface CameraDevice {
+  index: number;
+  name: string;
+  available: boolean;
+  width: number;
+  height: number;
+  fps: number;
+  selected: boolean;
+}
+
+interface CameraDevicesResponse {
+  selected_device: number;
+  devices: CameraDevice[];
 }
 
 export default function SystemPage() {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [scanning, setScanning] = useState<boolean | null>(null);
+  const [cameraDevice, setCameraDevice] = useState<number | null>(null);
+  const [cameraDevices, setCameraDevices] = useState<CameraDevice[]>([]);
+  const [cameraBusy, setCameraBusy] = useState(false);
   const [scanningBusy, setScanningBusy] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+
+  const loadCameraDevices = useCallback(async () => {
+    setCameraBusy(true);
+    try {
+      const data = await api.get<CameraDevicesResponse>(
+        "/system/camera/devices?max_index=8",
+      );
+      setCameraDevices(data.devices ?? []);
+      setCameraDevice(data.selected_device);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to scan cameras";
+      setScanError(message);
+    } finally {
+      setCameraBusy(false);
+    }
+  }, []);
 
   useEffect(() => {
     const load = () => {
@@ -176,13 +214,17 @@ export default function SystemPage() {
       api.get<SystemStats>("/system/stats").then(setStats).catch(() => {});
       api
         .get<CameraScanningResponse>("/system/camera/scanning")
-        .then((r) => setScanning(r.scanning))
+        .then((r) => {
+          setScanning(r.scanning);
+          setCameraDevice(r.device);
+        })
         .catch(() => {});
     };
     load();
+    loadCameraDevices();
     const interval = setInterval(load, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [loadCameraDevices]);
 
   const toggleScanning = useCallback(async () => {
     if (scanning === null || scanningBusy) return;
@@ -195,9 +237,10 @@ export default function SystemPage() {
     try {
       const r = await api.post<CameraScanningResponse>(
         "/system/camera/scanning",
-        { enabled: next },
+        { enabled: next, device: cameraDevice },
       );
       setScanning(r.scanning);
+      setCameraDevice(r.device);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to toggle camera scanning";
@@ -207,7 +250,32 @@ export default function SystemPage() {
     } finally {
       setScanningBusy(false);
     }
-  }, [scanning, scanningBusy]);
+  }, [cameraDevice, scanning, scanningBusy]);
+
+  const selectCameraDevice = useCallback(
+    async (value: string) => {
+      const next = Number(value);
+      if (!Number.isFinite(next) || cameraBusy) return;
+      setCameraBusy(true);
+      setScanError(null);
+      setCameraDevice(next);
+      try {
+        const r = await api.post<CameraScanningResponse>("/system/camera/device", {
+          device: next,
+        });
+        setCameraDevice(r.device);
+        setScanning(r.scanning);
+        await loadCameraDevices();
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Failed to select camera";
+        setScanError(message);
+      } finally {
+        setCameraBusy(false);
+      }
+    },
+    [cameraBusy, loadCameraDevices],
+  );
 
   const healthyCount = status?.services.filter(
     (s) => s.healthy && !s.stale
@@ -278,26 +346,57 @@ export default function SystemPage() {
           </StatusPill>
         }
       >
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="text-sm text-gray-400 max-w-2xl">
+        <div className="grid gap-4 lg:grid-cols-[1fr_360px] lg:items-end">
+          <div className="text-sm text-gray-400">
             {scanning
-              ? "Vision service has the laptop webcam open and is detecting faces / engagement live. Browser enrollment will fail until you turn this off (Windows can't share a camera between processes)."
-              : "Vision service is idle (relay mode). Browser enrollment can use the camera. Turn this on after enrolling so the system tracks people in the room."}
+              ? "Vision service has the selected local camera open and is detecting faces / engagement live. Browser enrollment may need a different camera or standby mode on Windows."
+              : "Vision service is idle (relay mode). Pick a camera, then start scanning when you want the system tracking people in the room."}
           </div>
-          <Button
-            onClick={toggleScanning}
-            disabled={scanning === null || scanningBusy}
-            variant={scanning ? "secondary" : "primary"}
-          >
-            <Camera className="w-4 h-4" />
-            <span className="ml-1.5">
-              {scanning === null
-                ? "..."
-                : scanning
-                  ? "STOP SCANNING"
-                  : "START SCANNING"}
-            </span>
-          </Button>
+          <div className="grid grid-cols-[1fr_auto] gap-2">
+            <Select
+              aria-label="Camera device"
+              value={cameraDevice ?? ""}
+              onChange={(e) => selectCameraDevice(e.target.value)}
+              disabled={cameraBusy}
+            >
+              {cameraDevices.length === 0 && (
+                <option value={cameraDevice ?? 0}>Camera {cameraDevice ?? 0}</option>
+              )}
+              {cameraDevices.map((device) => (
+                <option key={device.index} value={device.index}>
+                  {device.name}
+                  {device.available
+                    ? ` (${device.width}x${device.height})`
+                    : " (busy/offline)"}
+                </option>
+              ))}
+            </Select>
+            <Button
+              type="button"
+              onClick={loadCameraDevices}
+              loading={cameraBusy}
+              disabled={cameraBusy}
+              aria-label="Search connected cameras"
+              title="Search connected cameras"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </Button>
+            <Button
+              onClick={toggleScanning}
+              disabled={scanning === null || scanningBusy}
+              variant={scanning ? "secondary" : "primary"}
+              className="col-span-2"
+            >
+              <Camera className="w-4 h-4" />
+              <span className="ml-1.5">
+                {scanning === null
+                  ? "..."
+                  : scanning
+                    ? "STOP SCANNING"
+                    : "START SCANNING"}
+              </span>
+            </Button>
+          </div>
         </div>
         {scanError && (
           <div className="mt-2 text-xs text-red-300">{scanError}</div>

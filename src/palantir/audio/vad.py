@@ -47,6 +47,7 @@ class VoiceActivityDetector:
         self._total_samples = 0
         self._silence_samples = 0
         self._speech_detected = False
+        self._vad_remainder = np.empty(0, dtype=np.int16)
 
         logger.info(
             "vad_initialized",
@@ -61,6 +62,7 @@ class VoiceActivityDetector:
         self._total_samples = 0
         self._silence_samples = 0
         self._speech_detected = False
+        self._vad_remainder = np.empty(0, dtype=np.int16)
         self._model.reset_states()
         logger.debug("vad_recording_started")
 
@@ -80,15 +82,26 @@ class VoiceActivityDetector:
         self._audio_buffer.append(audio_chunk)
         self._total_samples += len(audio_chunk)
 
-        # Silero VAD expects float32 tensor, 512 samples per chunk at 16kHz
-        audio_float = audio_chunk.astype(np.float32) / 32768.0
-        tensor = torch.from_numpy(audio_float)
-
-        # Process in 512-sample windows
+        # Silero VAD expects 512-sample windows at 16 kHz. Our capture
+        # path emits 30 ms chunks (480 samples), so we must carry audio
+        # across callback boundaries instead of checking each chunk alone.
         window_size = 512
+        self._vad_remainder = np.concatenate((self._vad_remainder, audio_chunk))
+        complete_samples = (len(self._vad_remainder) // window_size) * window_size
+
         is_speech = False
-        for i in range(0, len(tensor) - window_size + 1, window_size):
+        processed_samples = 0
+        if complete_samples > 0:
+            ready = self._vad_remainder[:complete_samples]
+            self._vad_remainder = self._vad_remainder[complete_samples:]
+            audio_float = ready.astype(np.float32) / 32768.0
+            tensor = torch.from_numpy(audio_float)
+        else:
+            tensor = None
+
+        for i in range(0, len(tensor) if tensor is not None else 0, window_size):
             window = tensor[i : i + window_size]
+            processed_samples += window_size
             prob = self._model(window, self._sample_rate).item()
             if prob >= self._speech_threshold:
                 is_speech = True
@@ -97,8 +110,8 @@ class VoiceActivityDetector:
         if is_speech:
             self._speech_detected = True
             self._silence_samples = 0
-        else:
-            self._silence_samples += len(audio_chunk)
+        elif processed_samples > 0:
+            self._silence_samples += processed_samples
 
         # End conditions
         should_end = False
@@ -135,7 +148,12 @@ class VoiceActivityDetector:
     def is_recording(self) -> bool:
         return self._recording
 
+    @property
+    def speech_detected(self) -> bool:
+        return self._speech_detected
+
     def cancel(self) -> None:
         """Cancel current recording."""
         self._recording = False
         self._audio_buffer.clear()
+        self._vad_remainder = np.empty(0, dtype=np.int16)

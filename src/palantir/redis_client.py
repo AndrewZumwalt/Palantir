@@ -23,6 +23,8 @@ _fake_server = None
 # Redis channel names
 class Channels:
     AUDIO_WAKE = "audio:wake"
+    AUDIO_STATE = "audio:state"
+    AUDIO_LEVEL = "audio:level"
     AUDIO_UTTERANCE = "audio:utterance"
     AUDIO_SPEAKER_ID = "audio:speaker_id"
     VISION_FACES = "vision:faces"

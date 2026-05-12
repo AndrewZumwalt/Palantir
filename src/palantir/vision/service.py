@@ -9,6 +9,7 @@ import asyncio
 import json
 import signal
 import time
+from dataclasses import replace
 
 import structlog
 
@@ -69,6 +70,7 @@ class VisionService:
         self._config = load_config()
         self._camera: CameraCapture | None = None
         self._current_camera_mode: str = "relay"  # updated by _reconfigure_camera
+        self._current_camera_device: int = int(self._config.camera.device)
         self._redis = None
         self._binary_redis = None  # only created in relay mode
         self._subscriber: Subscriber | None = None
@@ -471,16 +473,40 @@ class VisionService:
         (relay) and "vision service owns it for room tracking" (local)
         without restarting the launcher.
         """
-        new_mode = (data or {}).get("mode")
+        data = data or {}
+        new_mode = data.get("mode") or self._current_camera_mode
         if new_mode not in ("local", "relay"):
             logger.warning("camera_mode_invalid", mode=new_mode)
             return
         try:
+            if "device" in data:
+                try:
+                    await self._redis.set("state:camera_device", str(int(data["device"])))
+                except (TypeError, ValueError):
+                    logger.warning("camera_device_invalid", device=data.get("device"))
+                    return
             await self._reconfigure_camera(new_mode)
             await self._redis.set("state:camera_mode", new_mode)
-            logger.info("camera_mode_changed", mode=new_mode)
+            logger.info("camera_mode_changed", mode=new_mode, device=self._camera_device())
         except Exception:
             logger.exception("camera_mode_change_failed", requested=new_mode)
+
+    def _camera_device(self) -> int:
+        try:
+            # Runtime callers need the async Redis value; this helper is only
+            # used for status/logging after _camera_config() has already read it.
+            return int(getattr(self, "_current_camera_device", self._config.camera.device))
+        except (TypeError, ValueError):
+            return int(self._config.camera.device)
+
+    async def _camera_config(self):
+        raw = await self._redis.get("state:camera_device")
+        try:
+            device = int(raw) if raw is not None else int(self._config.camera.device)
+        except (TypeError, ValueError):
+            device = int(self._config.camera.device)
+        self._current_camera_device = device
+        return replace(self._config.camera, device=device)
 
     async def _reconfigure_camera(self, mode: str) -> None:
         """Stop the current camera (if any) and start a fresh one in `mode`.
@@ -503,8 +529,9 @@ class VisionService:
         if relay_mode and self._binary_redis is None:
             self._binary_redis = await create_binary_redis(self._config)
 
+        camera_config = await self._camera_config()
         self._camera = create_camera_capture(
-            self._config.camera,
+            camera_config,
             relay_mode=relay_mode,
             binary_redis=self._binary_redis,
         )
@@ -544,11 +571,12 @@ class VisionService:
                     self._camera.stop()
                 except Exception:
                     logger.debug("camera_stop_during_reload_failed", exc_info=True)
-                relay_mode = self._config.relay.mode == "relay"
+                relay_mode = self._current_camera_mode == "relay"
                 if relay_mode and self._binary_redis is None:
                     self._binary_redis = await create_binary_redis(self._config)
+                camera_config = await self._camera_config()
                 self._camera = create_camera_capture(
-                    self._config.camera,
+                    camera_config,
                     relay_mode=relay_mode,
                     binary_redis=self._binary_redis,
                 )
@@ -565,6 +593,8 @@ class VisionService:
             details={
                 "privacy_mode": self._privacy_mode,
                 "capturing": self._camera.is_running if self._camera else False,
+                "mode": self._current_camera_mode,
+                "device": self._camera_device(),
                 "fps": self._camera.fps if self._camera else 0.0,
                 "frames_processed": self._last_frame_count,
                 "face_detection": _FACE_AVAILABLE,

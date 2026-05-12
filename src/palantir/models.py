@@ -50,6 +50,7 @@ class Utterance(BaseModel):
     text: str
     speaker_embedding: list[float] | None = None
     duration_seconds: float
+    source: str = "voice"
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

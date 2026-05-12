@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import platform
 import secrets
 import sqlite3
 import time
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from palantir.config import PalantirConfig
@@ -192,10 +193,60 @@ async def list_persons(db: sqlite3.Connection = Depends(get_db)):
 
 class CameraScanning(BaseModel):
     enabled: bool
+    device: int | None = None
+
+
+class CameraDeviceRequest(BaseModel):
+    device: int
+
+
+def _selected_camera_device(config: PalantirConfig, raw: str | None) -> int:
+    if raw is None:
+        return int(config.camera.device)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(config.camera.device)
+
+
+def _camera_backend() -> int:
+    import cv2
+
+    if platform.system().lower() == "windows":
+        return cv2.CAP_DSHOW
+    return cv2.CAP_ANY
+
+
+def _probe_camera(index: int) -> dict:
+    import cv2
+
+    cap = cv2.VideoCapture(index, _camera_backend())
+    try:
+        opened = bool(cap.isOpened())
+        if opened:
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+        else:
+            width = height = 0
+            fps = 0.0
+        return {
+            "index": index,
+            "name": f"Camera {index}",
+            "available": opened,
+            "width": width,
+            "height": height,
+            "fps": round(fps, 1),
+        }
+    finally:
+        cap.release()
 
 
 @router.get("/camera/scanning", dependencies=[Depends(rate_limit_read)])
-async def get_camera_scanning(redis: aioredis.Redis = Depends(get_redis)):
+async def get_camera_scanning(
+    redis: aioredis.Redis = Depends(get_redis),
+    config: PalantirConfig = Depends(get_config),
+):
     """Return whether the vision service is currently scanning the local camera.
 
     Reads the persisted mode from Redis.  When the value is missing we
@@ -203,13 +254,15 @@ async def get_camera_scanning(redis: aioredis.Redis = Depends(get_redis)):
     -LocalAudio), so the dashboard's toggle starts in the off position.
     """
     mode = await redis.get("state:camera_mode")
-    return {"scanning": mode == "local", "mode": mode or "relay"}
+    device = _selected_camera_device(config, await redis.get("state:camera_device"))
+    return {"scanning": mode == "local", "mode": mode or "relay", "device": device}
 
 
 @router.post("/camera/scanning", dependencies=[Depends(rate_limit_write)])
 async def set_camera_scanning(
     body: CameraScanning,
     redis: aioredis.Redis = Depends(get_redis),
+    config: PalantirConfig = Depends(get_config),
 ):
     """Toggle the vision service between local cv2 and Pi relay capture.
 
@@ -220,7 +273,58 @@ async def set_camera_scanning(
     in-place via _reconfigure_camera() -- no launcher restart needed.
     """
     new_mode = "local" if body.enabled else "relay"
-    await publish(redis, Channels.SYSTEM_CAMERA_MODE, {"mode": new_mode})
+    device = (
+        int(body.device)
+        if body.device is not None
+        else _selected_camera_device(config, await redis.get("state:camera_device"))
+    )
+    await redis.set("state:camera_device", str(device))
+    await publish(redis, Channels.SYSTEM_CAMERA_MODE, {"mode": new_mode, "device": device})
     # Persist so a launcher restart honors the operator's choice.
     await redis.set("state:camera_mode", new_mode)
-    return {"scanning": body.enabled, "mode": new_mode}
+    return {"scanning": body.enabled, "mode": new_mode, "device": device}
+
+
+@router.get("/camera/devices", dependencies=[Depends(rate_limit_read)])
+async def list_camera_devices(
+    max_index: int = 8,
+    redis: aioredis.Redis = Depends(get_redis),
+    config: PalantirConfig = Depends(get_config),
+):
+    """Probe local OpenCV camera indexes so the operator can pick a USB camera."""
+    max_index = max(0, min(max_index, 16))
+    selected = _selected_camera_device(config, await redis.get("state:camera_device"))
+    try:
+        devices = [_probe_camera(i) for i in range(max_index + 1)]
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="OpenCV is not installed") from exc
+
+    if all(d["index"] != selected for d in devices):
+        devices.append(
+            {
+                "index": selected,
+                "name": f"Camera {selected}",
+                "available": False,
+                "width": 0,
+                "height": 0,
+                "fps": 0.0,
+            }
+        )
+    for device in devices:
+        device["selected"] = device["index"] == selected
+    return {"selected_device": selected, "devices": devices}
+
+
+@router.post("/camera/device", dependencies=[Depends(rate_limit_write)])
+async def set_camera_device(
+    body: CameraDeviceRequest,
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    """Persist and apply the local camera index used by the vision service."""
+    device = int(body.device)
+    if device < 0 or device > 16:
+        raise HTTPException(status_code=400, detail="Camera device must be 0-16")
+    mode = await redis.get("state:camera_mode") or "relay"
+    await redis.set("state:camera_device", str(device))
+    await publish(redis, Channels.SYSTEM_CAMERA_MODE, {"mode": mode, "device": device})
+    return {"device": device, "mode": mode, "scanning": mode == "local"}
