@@ -39,6 +39,7 @@ from .routers import (
     events,
     settings,
     system,
+    vision_stream,
 )
 from .websocket import WebSocketManager
 
@@ -188,6 +189,7 @@ def create_app() -> FastAPI:
     app.include_router(events.router)
     app.include_router(automation.router)
     app.include_router(system.router)
+    app.include_router(vision_stream.router)
 
     # Health check (no auth required)
     @app.get("/api/health")

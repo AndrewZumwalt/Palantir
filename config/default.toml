@@ -1,7 +1,10 @@
 [camera]
 device = 0
-width = 640
-height = 480
+# Default 1080p -- common across every USB webcam and Pi CSI v2/v3.
+# Crank further (2560x1440 / 3840x2160) if your hardware supports it
+# and you want even more pixels per face for fine-detail recognition.
+width = 1920
+height = 1080
 fps = 15
 face_detection_interval = 1       # every N frames
 engagement_interval = 5           # every N frames

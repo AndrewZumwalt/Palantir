@@ -76,6 +76,7 @@ class VisionService:
         self._running = False
         self._start_time = time.monotonic()
         self._last_frame_count = 0
+        self._last_live_frame_publish = 0.0
 
         # Face detection/recognition
         self._face_detector: FaceDetector | None = None
@@ -179,6 +180,23 @@ class VisionService:
         self._last_frame_count = frame_num
         cam_cfg = self._config.camera
 
+        # Live feed: keep LATEST_FRAME warm for the troubleshooting view
+        # at /api/vision/stream.  Capped at ~15 Hz so a 60 fps source
+        # doesn't drown the Redis client in JPEG encodes.  In relay mode
+        # RelayCameraCapture already updates this on every incoming
+        # frame, so we skip here to avoid re-encoding what the Pi sent.
+        if self._config.relay.mode != "relay":
+            now = time.monotonic()
+            if now - self._last_live_frame_publish >= 1.0 / 15:
+                self._last_live_frame_publish = now
+                import cv2 as _cv2
+                _, jpeg_buf = _cv2.imencode(
+                    ".jpg", frame, [_cv2.IMWRITE_JPEG_QUALITY, 80]
+                )
+                await self._redis.set(
+                    Keys.LATEST_FRAME, jpeg_buf.tobytes(), ex=30
+                )
+
         # Tier 1: Face detection (every frame)
         if frame_num % cam_cfg.face_detection_interval == 0:
             await self._detect_faces(frame)
@@ -187,12 +205,10 @@ class VisionService:
         if frame_num % cam_cfg.engagement_interval == 0:
             await self._analyze_engagement(frame)
 
-        # Tier 3: Object detection (every 30th frame) + store frame for cloud vision
+        # Tier 3: Object detection (every 30th frame).  LATEST_FRAME is
+        # already warm above for cloud-vision lookups, so we only run
+        # the detector here.
         if frame_num % cam_cfg.object_detection_interval == 0:
-            # Store latest frame as JPEG in Redis for cloud vision queries
-            import cv2
-            _, jpeg_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            await self._redis.set(Keys.LATEST_FRAME, jpeg_buf.tobytes(), ex=30)
             await self._detect_objects(frame)
 
         # Periodic exit check for attendance (every 30 seconds)
