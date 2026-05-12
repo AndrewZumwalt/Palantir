@@ -51,7 +51,11 @@ export default function AttendancePanel() {
       }
     };
     load();
-    const interval = setInterval(load, 15000);
+    // Poll every 3s so "left the room" updates feel live.  The vision
+    // service closes attendance records on a ~12s worst-case window
+    // (10s exit_timeout + 2s polling), so a longer poll here would
+    // make the dashboard feel laggy even after the backend has caught up.
+    const interval = setInterval(load, 3000);
     return () => clearInterval(interval);
   }, []);
 

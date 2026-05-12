@@ -88,8 +88,24 @@ export default function EnrollmentWizard() {
       });
       streamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
-    } catch {
-      alert("Could not access camera. Please grant permission.");
+    } catch (e) {
+      // getUserMedia rejects with a DOMException whose `name` distinguishes
+      // permission-denied from camera-in-use from no-camera-found.  The
+      // generic "please grant permission" message we used to show was
+      // actively misleading when the real cause was the vision service
+      // holding the cam in -LocalVision mode.
+      const err = e as DOMException;
+      const reason =
+        err.name === "NotAllowedError"
+          ? "Permission denied. Click the camera icon in the address bar and allow access."
+          : err.name === "NotReadableError"
+          ? "Camera is in use by another app or process. Close other apps that use the camera (Camera, Teams, Zoom) and stop the palantir-vision service if it's running with -LocalVision."
+          : err.name === "NotFoundError"
+          ? "No camera detected."
+          : err.name === "OverconstrainedError"
+          ? "No camera matched the requested resolution. Try a different camera."
+          : `Could not start camera (${err.name || "unknown error"}: ${err.message || "no details"}).`;
+      alert(reason);
     }
   }, []);
 

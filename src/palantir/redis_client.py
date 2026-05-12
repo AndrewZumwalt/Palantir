@@ -35,6 +35,12 @@ class Channels:
     SYSTEM_STATUS = "system:status"
     SYSTEM_RELOAD = "system:reload"
     SYSTEM_RELOAD_PROGRESS = "system:reload:progress"
+    # Runtime camera-mode toggle: dashboard publishes {"mode": "local"|"relay"}
+    # to swap the vision service's capture between cv2 (laptop webcam) and
+    # the Pi relay -- without restarting the launcher.  Needed on Windows
+    # where the OS won't share a camera between processes (browser
+    # enrollment vs. the vision service's cv2.VideoCapture).
+    SYSTEM_CAMERA_MODE = "system:camera_mode"
     # ----- Pi <-> laptop relay (only used when input.source = "relay") -----
     # Web service publishes raw sensor data here after decoding from the
     # Pi's WebSocket; audio + vision services subscribe instead of opening

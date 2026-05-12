@@ -64,7 +64,13 @@ sleep_stillness_seconds = 30
 cloud_validation_interval_seconds = 300  # 5 minutes
 
 [attendance]
-exit_timeout_seconds = 300  # 5 minutes absent = exited
+# Time without a face detection before the attendance tracker closes the
+# record and marks the person "exited".  Dropped from the original 300s
+# (5 minutes, which made the Present panel feel broken during demos:
+# walk out of frame and the dashboard keeps you "present" for minutes)
+# to 10s.  Brief occlusions / look-aways may now thrash a person between
+# present + departed; raise this if that's a problem in production.
+exit_timeout_seconds = 10
 
 [automation]
 enabled = true

@@ -188,3 +188,39 @@ async def list_persons(db: sqlite3.Connection = Depends(get_db)):
         "SELECT id, name, role FROM persons WHERE active = 1 ORDER BY name"
     ).fetchall()
     return {"persons": [dict(r) for r in rows]}
+
+
+class CameraScanning(BaseModel):
+    enabled: bool
+
+
+@router.get("/camera/scanning", dependencies=[Depends(rate_limit_read)])
+async def get_camera_scanning(redis: aioredis.Redis = Depends(get_redis)):
+    """Return whether the vision service is currently scanning the local camera.
+
+    Reads the persisted mode from Redis.  When the value is missing we
+    treat the system as in relay mode (the launcher's default for
+    -LocalAudio), so the dashboard's toggle starts in the off position.
+    """
+    mode = await redis.get("state:camera_mode")
+    return {"scanning": mode == "local", "mode": mode or "relay"}
+
+
+@router.post("/camera/scanning", dependencies=[Depends(rate_limit_write)])
+async def set_camera_scanning(
+    body: CameraScanning,
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    """Toggle the vision service between local cv2 and Pi relay capture.
+
+    Use case (Windows): browser enrollment needs the camera, but
+    afterwards the operator wants the vision service to take it back
+    over for live face recognition.  This endpoint publishes a
+    SYSTEM_CAMERA_MODE message; the vision service swaps its capture
+    in-place via _reconfigure_camera() -- no launcher restart needed.
+    """
+    new_mode = "local" if body.enabled else "relay"
+    await publish(redis, Channels.SYSTEM_CAMERA_MODE, {"mode": new_mode})
+    # Persist so a launcher restart honors the operator's choice.
+    await redis.set("state:camera_mode", new_mode)
+    return {"scanning": body.enabled, "mode": new_mode}

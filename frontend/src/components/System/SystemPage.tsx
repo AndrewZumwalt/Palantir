@@ -8,8 +8,9 @@ import {
   Volume2,
 } from "lucide-react";
 import type { ComponentType } from "react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { Button } from "../ui/Button";
 import { LoadingLines } from "../ui/EmptyState";
 import { MetricKPI } from "../ui/MetricKPI";
 import { Panel, SectionHeader } from "../ui/Panel";
@@ -157,19 +158,56 @@ function ServiceCard({ service }: { service: ServiceStatus }) {
   );
 }
 
+interface CameraScanningResponse {
+  scanning: boolean;
+  mode: string;
+}
+
 export default function SystemPage() {
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
+  const [scanning, setScanning] = useState<boolean | null>(null);
+  const [scanningBusy, setScanningBusy] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = () => {
       api.get<SystemStatus>("/system/status").then(setStatus).catch(() => {});
       api.get<SystemStats>("/system/stats").then(setStats).catch(() => {});
+      api
+        .get<CameraScanningResponse>("/system/camera/scanning")
+        .then((r) => setScanning(r.scanning))
+        .catch(() => {});
     };
     load();
     const interval = setInterval(load, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  const toggleScanning = useCallback(async () => {
+    if (scanning === null || scanningBusy) return;
+    const next = !scanning;
+    setScanningBusy(true);
+    setScanError(null);
+    // Optimistic UI: flip immediately so the operator gets feedback before
+    // the vision service has actually swapped its capture.
+    setScanning(next);
+    try {
+      const r = await api.post<CameraScanningResponse>(
+        "/system/camera/scanning",
+        { enabled: next },
+      );
+      setScanning(r.scanning);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to toggle camera scanning";
+      setScanError(message);
+      // Revert the optimistic flip.
+      setScanning(!next);
+    } finally {
+      setScanningBusy(false);
+    }
+  }, [scanning, scanningBusy]);
 
   const healthyCount = status?.services.filter(
     (s) => s.healthy && !s.stale
@@ -229,6 +267,42 @@ export default function SystemPage() {
           <LoadingLines rows={2} />
         </Panel>
       )}
+
+      {/* Camera scanning toggle */}
+      <Panel
+        label="OPTICS"
+        title="Room scanning"
+        meta={
+          <StatusPill tone={scanning ? "green" : "gray"} size="xs" pulse={!!scanning}>
+            {scanning === null ? "..." : scanning ? "ACTIVE" : "STANDBY"}
+          </StatusPill>
+        }
+      >
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="text-sm text-gray-400 max-w-2xl">
+            {scanning
+              ? "Vision service has the laptop webcam open and is detecting faces / engagement live. Browser enrollment will fail until you turn this off (Windows can't share a camera between processes)."
+              : "Vision service is idle (relay mode). Browser enrollment can use the camera. Turn this on after enrolling so the system tracks people in the room."}
+          </div>
+          <Button
+            onClick={toggleScanning}
+            disabled={scanning === null || scanningBusy}
+            variant={scanning ? "secondary" : "primary"}
+          >
+            <Camera className="w-4 h-4" />
+            <span className="ml-1.5">
+              {scanning === null
+                ? "..."
+                : scanning
+                  ? "STOP SCANNING"
+                  : "START SCANNING"}
+            </span>
+          </Button>
+        </div>
+        {scanError && (
+          <div className="mt-2 text-xs text-red-300">{scanError}</div>
+        )}
+      </Panel>
 
       {/* Services */}
       <div>

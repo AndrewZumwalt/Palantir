@@ -27,11 +27,15 @@ param(
     [string]$AnthropicKey = $env:ANTHROPIC_API_KEY,
     [string]$GroqKey      = $env:GROQ_API_KEY,
     [string]$DataDir,
-    [switch]$LocalMode,    # use local mic/cam on the laptop instead of waiting for Pi
-    [switch]$NoFakeRedis,  # talk to a real Redis (default: in-process fakeredis)
-    [switch]$WithMl,       # include the [ml] extras (insightface/torch/whisper/yolo) -- needs MSVC Build Tools
-    [string]$PythonExe     # explicit Python interpreter; default = `py -3.11`
+    [switch]$LocalMode,      # shorthand: audio + vision both use laptop hardware
+    [switch]$LocalAudio,     # audio service uses laptop microphone
+    [switch]$LocalVision,    # vision service uses laptop webcam (BLOCKS browser enrollment on Windows -- the OS doesn't share cameras)
+    [switch]$NoFakeRedis,    # talk to a real Redis (default: Memurai on 127.0.0.1:6379)
+    [switch]$WithMl,         # include the [ml] extras (insightface/torch/whisper/yolo) -- needs MSVC Build Tools
+    [switch]$Reinstall,      # force pip install -e even if the package is already present (slow on Windows)
+    [string]$PythonExe       # explicit Python interpreter; default = `py -3.11`
 )
+if ($LocalMode) { $LocalAudio = $true; $LocalVision = $true }
 
 $ErrorActionPreference = "Stop"
 
@@ -103,19 +107,50 @@ if ($WithMl) {
     $pkgFlavor = "core only"
 }
 
-Write-Host ("[2/4] Installing Python deps ({0}) ..." -f $pkgFlavor) -ForegroundColor Cyan
-& $VenvPython -m pip install --quiet -e $pkgSpec
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Warning @"
+# Kill any palantir-* services left over from a previous launcher run.
+# Otherwise pip install will fail with WinError 32 (file in use) when it
+# tries to overwrite Scripts\palantir-*.exe.
+$leftover = Get-Process -Name 'palantir-*' -ErrorAction SilentlyContinue
+if ($leftover) {
+    Write-Host ("[!] Killing leftover palantir-* services ({0} processes)..." -f $leftover.Count) -ForegroundColor Yellow
+    $leftover | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+}
+
+# Skip pip install when palantir is already installed -- the editable install
+# means source changes are picked up live, so a reinstall on every launch is
+# pure overhead (and on Windows, races leftover .exe locks).  Pass -Reinstall
+# to force a refresh after pyproject.toml changes.
+$skipPipInstall = $false
+if (-not $Reinstall) {
+    $sentinelExe = Join-Path $Venv "Scripts\palantir-brain.exe"
+    if (Test-Path $sentinelExe) {
+        $importOk = & $VenvPython -c "import palantir; print('ok')" 2>$null
+        if ($importOk -eq "ok") {
+            Write-Host "[2/4] palantir already installed; skipping pip install (use -Reinstall to force refresh)" -ForegroundColor DarkGreen
+            $skipPipInstall = $true
+        }
+    }
+}
+
+if (-not $skipPipInstall) {
+    Write-Host ("[2/4] Installing Python deps ({0}) ..." -f $pkgFlavor) -ForegroundColor Cyan
+    & $VenvPython -m pip install --quiet -e $pkgSpec
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Warning @"
 pip install failed.  Common Windows causes:
   - insightface / openwakeword need a C++ compiler.  Install
     "Microsoft C++ Build Tools" (https://visualstudio.microsoft.com/visual-cpp-build-tools/)
     OR re-run without -WithMl to skip the heavy ML stack.
   - Wrong Python version.  This script requires Python 3.11; delete
     $Venv and re-run if it picked up a different one.
+  - A previous palantir-*.exe is still running and locking the file.
+    The launcher tries to kill leftovers up front, but if a stray service
+    survived, run `Stop-Process -Name palantir-* -Force` and retry.
 "@
-    throw "pip install -e $pkgSpec failed"
+        throw "pip install -e $pkgSpec failed"
+    }
 }
 
 # 2. Frontend bundle.  The web service mounts frontend/dist/ at "/", so
@@ -162,9 +197,16 @@ foreach ($d in @("enrollments", "models", "backups", "tls")) {
 if (-not $AuthToken) { $AuthToken = "devtoken" }
 
 Write-Host "[4/4] Starting services..." -ForegroundColor Cyan
-$relayDesc = if ($LocalMode) { "local (laptop hardware)" } else { "relay (waiting for Pi)" }
-$redisDesc = if ($NoFakeRedis) { "real (REDIS_URL or unix:///var/run/redis/redis.sock)" } else { "in-process fakeredis" }
-$relayMode = if ($LocalMode) { "local" } else { "relay" }
+$audioMode  = if ($LocalAudio)  { "local" } else { "relay" }
+$visionMode = if ($LocalVision) { "local" } else { "relay" }
+$relayDesc  = "audio=$audioMode, vision=$visionMode"
+# Redis: every service needs to share a real Redis-protocol broker.  An
+# in-process fakeredis is per-process, and fakeredis.TcpFakeServer's pub/sub
+# is broken on Windows (no fcntl -> handler thread blocks in readline() and
+# never delivers pub/sub messages), so heartbeats and wake-word events would
+# never cross the process boundary.  Default = Memurai on 127.0.0.1:6379.
+# Pass -NoFakeRedis to honor an externally-set REDIS_URL instead.
+$redisDesc = if ($NoFakeRedis) { "honoring `$env:REDIS_URL" } else { "memurai on 127.0.0.1:6379" }
 
 # TLS: set the cert + key paths so the web service auto-generates a
 # self-signed cert in .dev-data/tls/ on first start.  Without this,
@@ -184,11 +226,16 @@ $envOverrides = @{
     PALANTIR_AUTH_TOKEN      = $AuthToken
     PALANTIR_DB_PATH         = (Join-Path $DataDir "palantir.db")
     PALANTIR_ENROLLMENT_PATH = (Join-Path $DataDir "enrollments")
-    PALANTIR_RELAY_MODE      = $relayMode
     PALANTIR_TLS_CERT_FILE   = $tlsCert
     PALANTIR_TLS_KEY_FILE    = $tlsKey
 }
-if (-not $NoFakeRedis) { $envOverrides["PALANTIR_REDIS_FAKE"] = "1" }
+if (-not $NoFakeRedis) {
+    # Point every service at Memurai (free Redis-compatible Windows server,
+    # default port 6379).  Crucially we do NOT set PALANTIR_REDIS_FAKE=1 --
+    # that triggers the in-process fakeredis path, which gives each service
+    # its OWN keyspace and silently breaks all inter-service messaging.
+    $envOverrides["REDIS_URL"] = "redis://127.0.0.1:6379/0"
+}
 if ($AnthropicKey)     { $envOverrides["ANTHROPIC_API_KEY"]   = $AnthropicKey }
 if ($GroqKey)          { $envOverrides["GROQ_API_KEY"]        = $GroqKey }
 
@@ -211,11 +258,48 @@ foreach ($k in $envOverrides.Keys) {
     [Environment]::SetEnvironmentVariable($k, $envOverrides[$k], "Process")
 }
 try {
+    if (-not $NoFakeRedis) {
+        # Memurai is a Windows service that auto-starts; we just verify the
+        # port is reachable before launching the services.  If it's missing
+        # the services would spew connection-refused errors and the
+        # dashboard would still show every service offline.
+        $reachable = $false
+        $deadline = (Get-Date).AddSeconds(5)
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $tc = New-Object System.Net.Sockets.TcpClient
+                $tc.Connect("127.0.0.1", 6379)
+                $tc.Close()
+                $reachable = $true
+                break
+            } catch {
+                Start-Sleep -Milliseconds 200
+            }
+        }
+        if (-not $reachable) {
+            Write-Host ""
+            Write-Host "Cannot reach Redis on 127.0.0.1:6379." -ForegroundColor Red
+            Write-Host "Install Memurai (free, native Windows Redis):" -ForegroundColor Red
+            Write-Host "  winget install -e --id Memurai.MemuraiDeveloper" -ForegroundColor Yellow
+            Write-Host "Or pass -NoFakeRedis and set `$env:REDIS_URL to your own broker." -ForegroundColor Yellow
+            throw "Redis broker unreachable -- aborting."
+        }
+        Write-Host ("  redis broker:  reachable on 127.0.0.1:6379") -ForegroundColor DarkGreen
+    }
+
     foreach ($svc in $services) {
         $exe = Join-Path $Venv "Scripts\$svc.exe"
         if (-not (Test-Path $exe)) {
             Write-Warning "missing entry point: $exe (did pip install run?)"
             continue
+        }
+        # Set the per-service relay mode just before spawning, so
+        # palantir-audio sees `local` (laptop mic) while palantir-vision
+        # sees `relay` (no cv2.VideoCapture grab; browser can use the cam).
+        switch ($svc) {
+            "palantir-audio"  { [Environment]::SetEnvironmentVariable("PALANTIR_RELAY_MODE", $audioMode,  "Process") }
+            "palantir-vision" { [Environment]::SetEnvironmentVariable("PALANTIR_RELAY_MODE", $visionMode, "Process") }
+            default           { [Environment]::SetEnvironmentVariable("PALANTIR_RELAY_MODE", "relay",     "Process") }
         }
         Write-Host ("  -> $svc") -ForegroundColor DarkCyan
         $p = Start-Process -FilePath $exe -PassThru -NoNewWindow `

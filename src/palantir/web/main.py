@@ -33,6 +33,7 @@ from palantir.relay.protocol import Frame, Op
 from .routers import (
     attendance,
     automation,
+    chat,
     dashboard,
     engagement,
     enrollment,
@@ -183,6 +184,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(settings.router)
     app.include_router(enrollment.router)
+    app.include_router(chat.router)
     app.include_router(attendance.router)
     app.include_router(engagement.router)
     app.include_router(events.router)

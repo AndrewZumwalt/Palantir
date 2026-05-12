@@ -331,14 +331,40 @@ class BrainService:
         return any(trigger in lower for trigger in complex_triggers)
 
     def _is_visual_question(self, text: str) -> bool:
-        """Detect if a question requires looking at the camera feed."""
+        """Detect if a question requires looking at the camera feed.
+
+        Two categories:
+          * EXPLICIT visual queries — "where", "see", "what color", etc.
+          * IMPLICIT references — pronouns or words that only make sense
+            with a current camera view ("describe him", "what is he wearing",
+            "tell me about that person").  Without these, "describe the
+            person in front of you" silently falls through to the text
+            pipeline, which then answers from a stale visible_persons
+            cache and gets the identity wrong.
+        """
         visual_triggers = [
-            "where is", "where are", "where's", "can you see",
-            "do you see", "what am i wearing", "what is he wearing",
-            "what is she wearing", "what color", "how many people",
-            "what's on the", "look at", "show me", "find the",
-            "what does", "look like", "what's in", "is there a",
-            "what am i holding", "what am i doing",
+            # Explicit "look at the camera" cues.
+            "where is", "where are", "where's",
+            "can you see", "do you see",
+            "what color", "how many people", "look at",
+            "show me", "find the", "look like", "what's in",
+            "is there a", "what's on the",
+            # First-person visual self-reference.
+            "what am i wearing", "what am i holding", "what am i doing",
+            # Other-person visual reference (the user's main demo case).
+            "what is he wearing", "what is she wearing",
+            "what are they wearing", "what's he wearing", "what's she wearing",
+            "what is he holding", "what is she holding",
+            "what is he doing", "what is she doing",
+            "wearing", "holding", "doing",
+            # Describe / identify open-ended.
+            "describe", "what does",
+            "tell me about him", "tell me about her", "tell me about them",
+            "tell me about the person", "tell me about that person",
+            "who is he", "who is she", "who's he", "who's she",
+            "who is that", "who's that", "who is this", "who's this",
+            # Engagement / attention pronouns.
+            "is he", "is she", "are they",
         ]
         lower = text.lower()
         return any(trigger in lower for trigger in visual_triggers)

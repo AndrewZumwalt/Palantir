@@ -150,12 +150,42 @@ async def record_consent(
     return {"status": "consent_recorded"}
 
 
+async def _broadcast_enrollment_reload(
+    redis: aioredis.Redis, person_id: str, kind: str
+) -> None:
+    """Tell long-running services to reload their identity profiles.
+
+    The web process holds a lazy `_face_recognizer` and `_speaker_identifier`
+    that get the new embedding straight from the enrollment call.  But the
+    vision and audio services have their OWN in-memory caches that only
+    refresh from disk when SYSTEM_RELOAD fires.  Without this broadcast,
+    a freshly enrolled person never gets recognized in the room.
+    """
+    try:
+        await publish(
+            redis,
+            Channels.SYSTEM_RELOAD,
+            {
+                "reload_id": secrets.token_hex(8),
+                "services": ["vision", "audio", "brain"],
+                "reason": f"{kind}_enrollment_complete",
+                "person_id": person_id,
+            },
+        )
+    except Exception:
+        # The enrollment itself succeeded -- don't 500 just because the
+        # reload broadcast hiccuped.  Operator can still hit the manual
+        # POWER CYCLE button on the dashboard.
+        pass
+
+
 @router.post("/persons/{person_id}/face", dependencies=[Depends(rate_limit_enroll)])
 async def capture_face(
     person_id: str,
     req: FacePhotoRequest,
     db: sqlite3.Connection = Depends(get_db),
     config: PalantirConfig = Depends(get_config),
+    redis: aioredis.Redis = Depends(get_redis),
 ):
     """Submit a face photo for enrollment (step 3, repeat for required samples).
 
@@ -226,6 +256,12 @@ async def capture_face(
             recognizer = _get_face_recognizer(db, config)
             recognizer.enroll_face(person_id, embeddings)
 
+    if complete:
+        # Tell vision/audio/brain to reload their profile caches so the
+        # new face is picked up live -- otherwise the running services
+        # keep using the older cache and never recognize this person.
+        await _broadcast_enrollment_reload(redis, person_id, kind="face")
+
     return EnrollmentStatus(
         person_id=person_id,
         name=row["name"],
@@ -272,6 +308,7 @@ async def capture_voice(
     req: VoiceSampleRequest,
     db: sqlite3.Connection = Depends(get_db),
     config: PalantirConfig = Depends(get_config),
+    redis: aioredis.Redis = Depends(get_redis),
 ):
     """Submit a voice sample for enrollment.
 
@@ -325,6 +362,12 @@ async def capture_voice(
             for emb_file in sorted(enrollment_dir.glob("voice_emb_*.npy")):
                 embeddings.append(np.load(str(emb_file)))
             identifier.enroll_voice(person_id, embeddings)
+
+    if complete:
+        # Tell vision/audio/brain to reload their profile caches so the
+        # new voice is matched live -- otherwise the audio service keeps
+        # using the older cache and never identifies this speaker.
+        await _broadcast_enrollment_reload(redis, person_id, kind="voice")
 
     return VoiceEnrollmentStatus(
         person_id=person_id,

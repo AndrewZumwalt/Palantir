@@ -92,6 +92,17 @@ class VisionService:
         self._last_exit_check = time.monotonic()
         self._loop: asyncio.AbstractEventLoop | None = None
 
+        # Per-person "last detected this frame or recently" timestamps.  The
+        # attendance tracker uses a 5-minute exit timeout (correct for class
+        # attendance: a brief look-away shouldn't log an exit), but the
+        # brain's visible_persons context needs to track "who's literally
+        # in front of the camera RIGHT NOW".  We prune entries from
+        # state:visible_persons that haven't been seen in VISIBLE_TIMEOUT
+        # seconds so the LLM doesn't keep saying "Andrew is here" after
+        # Andrew walks out.
+        self._last_visible_at: dict[str, float] = {}
+        self._visible_timeout_seconds: float = 3.0
+
     async def start(self) -> None:
         preflight = validate_for("vision", self._config)
         if not log_and_check(preflight, fatal_on_error=False):
@@ -103,6 +114,19 @@ class VisionService:
 
         privacy = await self._redis.get(Keys.PRIVACY_MODE)
         self._privacy_mode = privacy == "1"
+
+        # Clear visible/present state inherited from a previous launcher run.
+        # Memurai keeps these keys across restarts, so without this wipe the
+        # brain would keep saying "Andrew is here" after a fresh start even
+        # before the camera sees a single frame.  The prune logic in
+        # _detect_faces only removes entries that THIS process knows about
+        # via _last_visible_at -- it can't tell the difference between a
+        # stale entry left by a dead process and a legitimate one.
+        try:
+            await self._redis.delete(Keys.VISIBLE_PERSONS, Keys.PRESENT_PERSONS)
+            logger.info("visible_persons_cleared_on_startup")
+        except Exception:
+            logger.warning("visible_persons_clear_failed", exc_info=True)
 
         # Initialize face detection
         if _FACE_AVAILABLE:
@@ -144,19 +168,16 @@ class VisionService:
         self._subscriber = Subscriber(self._redis)
         self._subscriber.on(Channels.SYSTEM_PRIVACY, self._on_privacy_toggle)
         self._subscriber.on(Channels.SYSTEM_RELOAD, self._on_reload)
+        self._subscriber.on(Channels.SYSTEM_CAMERA_MODE, self._on_camera_mode_change)
         await self._subscriber.start()
 
-        # Start camera (local USB camera OR Pi relay over Redis)
-        relay_mode = self._config.relay.mode == "relay"
-        if relay_mode and self._binary_redis is None:
-            self._binary_redis = await create_binary_redis(self._config)
-        self._camera = create_camera_capture(
-            self._config.camera,
-            relay_mode=relay_mode,
-            binary_redis=self._binary_redis,
-        )
-        if not self._privacy_mode:
-            self._camera.start()
+        # Start camera (local USB camera OR Pi relay over Redis).  The
+        # mode persists in Redis so that subsequent restarts honor whatever
+        # the operator last picked from the dashboard -- otherwise toggling
+        # to "local" for room scanning would silently revert to "relay" on
+        # the next launcher restart.
+        startup_mode = await self._redis.get("state:camera_mode") or self._config.relay.mode
+        await self._reconfigure_camera(startup_mode)
 
         self._running = True
         logger.info(
@@ -195,9 +216,14 @@ class VisionService:
             await self._redis.set(Keys.LATEST_FRAME, jpeg_buf.tobytes(), ex=30)
             await self._detect_objects(frame)
 
-        # Periodic exit check for attendance (every 30 seconds)
+        # Periodic exit check for attendance.  The original 30s cadence
+        # made the dashboard's Present panel feel broken: even with a 10s
+        # exit_timeout, a person who walked out of frame stayed marked
+        # present for up to 30 + 10 = 40 seconds before the next check
+        # closed their record.  Polling every 2s drops worst-case
+        # detection latency to ~12s, which feels live during a demo.
         now = time.monotonic()
-        if now - self._last_exit_check >= 30:
+        if now - self._last_exit_check >= 2:
             self._last_exit_check = now
             await self._check_attendance_exits()
 
@@ -211,7 +237,11 @@ class VisionService:
             None, self._face_detector.detect, frame
         )
 
+        # Even when no faces are detected we still need to prune stale
+        # visible_persons entries -- otherwise an empty room keeps
+        # advertising whoever was last seen.
         if not detections:
+            await self._prune_stale_visible()
             return
 
         detected_faces = []
@@ -255,12 +285,45 @@ class VisionService:
                     )
                     # Add to present set
                     await self._redis.sadd(Keys.PRESENT_PERSONS, result.person_id)
+                    # Mark as freshly visible so the prune step below leaves
+                    # this entry alone.
+                    self._last_visible_at[result.person_id] = time.monotonic()
 
             detected_faces.append(face_msg)
 
         # Publish detected faces
         faces_data = [f.model_dump() for f in detected_faces]
         await publish(self._redis, Channels.VISION_FACES, {"faces": faces_data})
+
+        # Prune visible_persons entries the camera hasn't actually seen
+        # within VISIBLE_TIMEOUT.  Without this, every face we ever match
+        # sticks in the hash forever and the brain's context keeps saying
+        # "Andrew is here" long after Andrew walked out -- so it gives
+        # wrong answers like "Andrew is wearing X" when someone else is
+        # standing in frame.  Attendance records (the SQL side) keep
+        # their own slower 5-minute exit timeout; that's deliberately
+        # separate so a brief look-away doesn't log a phantom exit.
+        await self._prune_stale_visible()
+
+    async def _prune_stale_visible(self) -> None:
+        """Remove visible_persons entries that haven't been re-detected recently."""
+        if not self._redis:
+            return
+        now = time.monotonic()
+        cutoff = now - self._visible_timeout_seconds
+        stale_ids: list[str] = []
+        for person_id, last_at in list(self._last_visible_at.items()):
+            if last_at < cutoff:
+                stale_ids.append(person_id)
+        if not stale_ids:
+            return
+        try:
+            await self._redis.hdel(Keys.VISIBLE_PERSONS, *stale_ids)
+        except Exception:
+            logger.debug("visible_prune_failed", exc_info=True)
+        for pid in stale_ids:
+            self._last_visible_at.pop(pid, None)
+        logger.debug("visible_pruned", ids=stale_ids)
 
     async def _analyze_engagement(self, frame) -> None:
         """Run pose-based engagement classification on the current frame."""
@@ -381,6 +444,54 @@ class VisionService:
             if self._camera and not self._camera.is_running:
                 self._camera.start()
             logger.info("vision_privacy_mode_disabled")
+
+    async def _on_camera_mode_change(self, data: dict) -> None:
+        """Swap the camera capture between local cv2 and Redis relay at runtime.
+
+        Triggered by POST /api/system/camera/scanning so the operator can
+        flip the laptop webcam between "browser owns it for enrollment"
+        (relay) and "vision service owns it for room tracking" (local)
+        without restarting the launcher.
+        """
+        new_mode = (data or {}).get("mode")
+        if new_mode not in ("local", "relay"):
+            logger.warning("camera_mode_invalid", mode=new_mode)
+            return
+        try:
+            await self._reconfigure_camera(new_mode)
+            await self._redis.set("state:camera_mode", new_mode)
+            logger.info("camera_mode_changed", mode=new_mode)
+        except Exception:
+            logger.exception("camera_mode_change_failed", requested=new_mode)
+
+    async def _reconfigure_camera(self, mode: str) -> None:
+        """Stop the current camera (if any) and start a fresh one in `mode`.
+
+        Used both at startup and by the runtime mode-change handler.  In
+        privacy mode we still construct the new capture but leave it
+        stopped, mirroring what _on_privacy_toggle would do.
+        """
+        relay_mode = mode == "relay"
+        # Tear down whatever's running first so cv2.VideoCapture releases
+        # the camera before we attempt to reopen it (or before the browser
+        # tries to grab it during enrollment).
+        if self._camera is not None:
+            try:
+                self._camera.stop()
+            except Exception:
+                logger.debug("camera_stop_failed", exc_info=True)
+            self._camera = None
+
+        if relay_mode and self._binary_redis is None:
+            self._binary_redis = await create_binary_redis(self._config)
+
+        self._camera = create_camera_capture(
+            self._config.camera,
+            relay_mode=relay_mode,
+            binary_redis=self._binary_redis,
+        )
+        if not self._privacy_mode:
+            self._camera.start()
 
     async def _on_reload(self, data: dict) -> None:
         """Rebuild model/camera state in-place when a reload is requested.
