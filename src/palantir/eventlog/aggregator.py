@@ -11,6 +11,7 @@ import sqlite3
 import structlog
 
 from palantir.models import EngagementState
+from palantir.names import display_person_name
 
 logger = structlog.get_logger()
 
@@ -72,7 +73,7 @@ class EngagementAggregator:
             if pid not in person_data:
                 person_data[pid] = {
                     "person_id": pid,
-                    "name": row["name"],
+                    "name": display_person_name(row["name"]),
                     "states": {},
                     "total": 0,
                 }

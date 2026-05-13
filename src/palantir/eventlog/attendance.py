@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 
 import structlog
 
+from palantir.names import display_person_name
+
 logger = structlog.get_logger()
 
 
@@ -85,7 +87,10 @@ class AttendanceTracker:
         summary = {
             "session_id": self._session_id,
             "total_attendees": len(rows),
-            "records": [dict(row) for row in rows],
+            "records": [
+                {**dict(row), "name": display_person_name(row["name"])}
+                for row in rows
+            ],
         }
 
         logger.info("session_ended", session_id=self._session_id, attendees=len(rows))

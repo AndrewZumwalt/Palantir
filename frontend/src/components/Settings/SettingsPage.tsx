@@ -7,6 +7,7 @@ import {
   KeyRound,
   Play,
   Trash2,
+  Volume2,
   Workflow,
   Zap,
 } from "lucide-react";
@@ -34,11 +35,23 @@ interface ConfigData {
   allow_shell_commands: boolean;
   camera: { width: number; height: number; fps: number };
   engagement: { smoothing_window_seconds: number };
+  tts: {
+    engine: string;
+    voice: string;
+    voice_source: "db" | "config";
+    voices: TTSVoiceOption[];
+  };
 }
 
 interface RetentionResult {
   retention_days: number;
   events_deleted: number;
+}
+
+interface TTSVoiceOption {
+  id: string;
+  label: string;
+  description: string;
 }
 
 function DetailRow({
@@ -121,9 +134,19 @@ export default function SettingsPage() {
   const [keysSaving, setKeysSaving] = useState(false);
   const [keysSaved, setKeysSaved] = useState<string | null>(null);
   const [keysError, setKeysError] = useState<string | null>(null);
+  const [selectedVoice, setSelectedVoice] = useState("");
+  const [voiceSaving, setVoiceSaving] = useState(false);
+  const [voiceSaved, setVoiceSaved] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   const refreshConfig = () =>
-    api.get<ConfigData>("/settings/config").then(setConfig).catch(() => {});
+    api
+      .get<ConfigData>("/settings/config")
+      .then((cfg) => {
+        setConfig(cfg);
+        setSelectedVoice(cfg.tts?.voice ?? "");
+      })
+      .catch(() => {});
 
   useEffect(() => {
     Promise.all([
@@ -132,6 +155,7 @@ export default function SettingsPage() {
     ])
       .then(([cfg, priv]) => {
         setConfig(cfg);
+        setSelectedVoice(cfg.tts?.voice ?? "");
         setPrivacyMode(priv.privacy_mode);
       })
       .catch(() => {})
@@ -186,6 +210,26 @@ export default function SettingsPage() {
     const newState = !privacyMode;
     await api.post(`/settings/privacy?enabled=${newState}`);
     setPrivacyMode(newState);
+  };
+
+  const saveTtsVoice = async () => {
+    if (!selectedVoice || selectedVoice === config?.tts.voice) return;
+    setVoiceSaving(true);
+    setVoiceSaved(null);
+    setVoiceError(null);
+    try {
+      const result = await api.post<{ voice: string }>("/settings/tts", {
+        voice: selectedVoice,
+      });
+      const option = config?.tts.voices.find((voice) => voice.id === result.voice);
+      setVoiceSaved(`Voice set to ${option?.label ?? result.voice}`);
+      await refreshConfig();
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : "Server may be offline.";
+      setVoiceError(`Voice update failed -- ${detail}`);
+    } finally {
+      setVoiceSaving(false);
+    }
   };
 
   const runCleanup = async () => {
@@ -557,6 +601,71 @@ export default function SettingsPage() {
         <p className="mt-4 font-data text-[10px] text-gray-600 uppercase tracking-[0.14em]">
           // db-stored keys override env vars. clear to fall back to .env.
         </p>
+      </Panel>
+
+      {/* ============ TTS VOICE ============ */}
+      <Panel
+        label="VOICE"
+        title="Text-to-speech output"
+        meta={
+          voiceSaving ? (
+            <StatusPill tone="amber" size="xs" pulse>
+              APPLYING
+            </StatusPill>
+          ) : (
+            <StatusPill tone="cyan" size="xs">
+              {config?.tts.engine?.toUpperCase() ?? "TTS"}
+            </StatusPill>
+          )
+        }
+      >
+        <div className="grid gap-4 lg:grid-cols-[1fr_auto] lg:items-end">
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="font-data text-[11px] uppercase tracking-[0.18em] text-gray-400">
+                Voice option
+              </label>
+              <span className="font-data text-[11px] text-gray-500">
+                {config?.tts.voice_source === "db" ? "dashboard" : "config"}
+              </span>
+            </div>
+            <select
+              value={selectedVoice}
+              onChange={(e) => {
+                setSelectedVoice(e.target.value);
+                setVoiceSaved(null);
+                setVoiceError(null);
+              }}
+              disabled={voiceSaving}
+              className="w-full bg-[#0a0f1f] border border-[#1f2c4a] px-3 py-2 text-sm text-gray-200 font-data focus:outline-none focus:border-cyan-700"
+            >
+              {config?.tts.voices.map((voice) => (
+                <option key={voice.id} value={voice.id}>
+                  {voice.label} - {voice.description}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Button
+            variant="cyan"
+            onClick={saveTtsVoice}
+            loading={voiceSaving}
+            disabled={voiceSaving || !selectedVoice || selectedVoice === config?.tts.voice}
+            iconLeft={<Volume2 className="w-4 h-4" />}
+          >
+            APPLY VOICE
+          </Button>
+        </div>
+        {(voiceSaved || voiceError) && (
+          <div
+            className={[
+              "mt-3 font-data text-[11px]",
+              voiceError ? "text-red-300" : "text-emerald-300",
+            ].join(" ")}
+          >
+            &gt; {voiceError ?? voiceSaved}
+          </div>
+        )}
       </Panel>
 
       {/* ============ HARDWARE ============ */}

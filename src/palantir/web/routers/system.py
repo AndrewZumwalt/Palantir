@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from palantir.config import PalantirConfig
+from palantir.names import display_person_name
 from palantir.redis_client import Channels, publish
 from palantir.web.dependencies import get_config, get_db, get_redis, verify_auth
 from palantir.web.rate_limit import rate_limit_read, rate_limit_write
@@ -188,7 +189,12 @@ async def list_persons(db: sqlite3.Connection = Depends(get_db)):
     rows = db.execute(
         "SELECT id, name, role FROM persons WHERE active = 1 ORDER BY name"
     ).fetchall()
-    return {"persons": [dict(r) for r in rows]}
+    persons = []
+    for row in rows:
+        item = dict(row)
+        item["name"] = display_person_name(item.get("name"))
+        persons.append(item)
+    return {"persons": persons}
 
 
 class CameraScanning(BaseModel):

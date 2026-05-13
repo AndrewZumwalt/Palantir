@@ -28,6 +28,7 @@ class DetectedFace(BaseModel):
     name: str | None = None
     confidence: float = 0.0
     bbox: BoundingBox
+    source: str = "face"  # "face", "body", or "track"
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
@@ -49,6 +50,9 @@ class WakeWordEvent(BaseModel):
 class Utterance(BaseModel):
     text: str
     speaker_embedding: list[float] | None = None
+    speaker_person_id: str | None = None
+    speaker_name: str | None = None
+    speaker_confidence: float = 0.0
     duration_seconds: float
     source: str = "voice"
     timestamp: datetime = Field(default_factory=datetime.now)
@@ -93,6 +97,8 @@ class PersonEngagement(BaseModel):
     name: str | None = None
     state: EngagementState
     confidence: float = 0.0
+    bbox: BoundingBox | None = None
+    track_id: int | None = None
     timestamp: datetime = Field(default_factory=datetime.now)
 
 

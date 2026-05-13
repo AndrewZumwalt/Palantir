@@ -9,15 +9,18 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
+from dataclasses import replace
 
 import structlog
 
 from palantir.config import load_config
+from palantir.db import init_db
 from palantir.logging import setup_logging
 from palantir.models import AssistantResponse, PrivacyModeEvent, ServiceStatus
 from palantir.preflight import log_and_check, validate_for
 from palantir.redis_client import Channels, Keys, Subscriber, create_redis, publish
 from palantir.reload import handle_reload_request
+from palantir.settings_store import get_setting
 
 from .audio_output import AudioOutput, create_audio_output
 from .edge_engine import make_engine
@@ -32,6 +35,7 @@ class TTSService:
     def __init__(self):
         self._config = load_config()
         self._redis = None
+        self._db = None
         self._subscriber: Subscriber | None = None
         self._privacy_mode = False
         self._running = False
@@ -52,6 +56,7 @@ class TTSService:
 
         self._loop = asyncio.get_running_loop()
         self._redis = await create_redis(self._config)
+        self._db = init_db(self._config)
 
         privacy = await self._redis.get(Keys.PRIVACY_MODE)
         self._privacy_mode = privacy == "1"
@@ -60,7 +65,7 @@ class TTSService:
         # make_engine respects config.tts.engine: "edge" (default, natural
         # Microsoft neural voices, needs internet) or "piper" (local but
         # robotic; needs the voice .onnx pre-downloaded).
-        self._engine = make_engine(self._config.tts)
+        self._engine = make_engine(self._effective_tts_config())
         relay_mode = self._config.relay.mode == "relay"
         self._output = create_audio_output(
             relay_mode=relay_mode,
@@ -83,6 +88,10 @@ class TTSService:
             engine_available=self._engine.is_available,
         )
         await self._publish_status(healthy=True)
+
+    def _effective_tts_config(self):
+        voice = get_setting(self._db, "tts_voice") if self._db else None
+        return replace(self._config.tts, voice=voice or self._config.tts.voice)
 
     async def _on_response(self, data: dict) -> None:
         """Queue a brain response for TTS synthesis."""
@@ -144,6 +153,7 @@ class TTSService:
                     self._output.stop()
                 except Exception:
                     logger.debug("tts_stop_during_reload_failed", exc_info=True)
+            self._engine = make_engine(self._effective_tts_config())
             await self._publish_status(healthy=True)
 
         await handle_reload_request(self._redis, "tts", data, _do)
@@ -157,6 +167,7 @@ class TTSService:
                 "privacy_mode": self._privacy_mode,
                 "queue_size": self._speech_queue.qsize(),
                 "engine_available": self._engine.is_available if self._engine else False,
+                "voice": getattr(self._engine, "_voice", self._config.tts.voice),
                 "playing": self._output.is_playing if self._output else False,
             },
         )
@@ -182,6 +193,8 @@ class TTSService:
             self._output.stop()
         if self._subscriber:
             await self._subscriber.stop()
+        if self._db:
+            self._db.close()
         if self._redis:
             await self._redis.close()
         logger.info("tts_service_stopped")

@@ -7,6 +7,7 @@ capturing face photos, extracting embeddings, and storing them.
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 import sqlite3
 import uuid
@@ -20,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from palantir.config import PalantirConfig
+from palantir.names import display_person_name
 from palantir.redis_client import Channels, Keys, publish
 from palantir.vision.face_detector import FaceDetector
 from palantir.vision.face_recognizer import FaceRecognizer
@@ -83,6 +85,11 @@ class CreatePersonRequest(BaseModel):
     role: str = Field(default="student", max_length=20)
 
 
+class UpdatePersonRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    role: str | None = Field(default=None, max_length=20)
+
+
 class FacePhotoRequest(BaseModel):
     """Base64-encoded JPEG image from the camera."""
     image_base64: str = Field(min_length=1, max_length=8_000_000)
@@ -110,7 +117,12 @@ async def list_persons(db: sqlite3.Connection = Depends(get_db)):
         "CASE WHEN voice_embedding IS NOT NULL THEN 1 ELSE 0 END as has_voice "
         "FROM persons WHERE active = 1 ORDER BY name"
     ).fetchall()
-    return {"persons": [dict(row) for row in rows]}
+    persons = []
+    for row in rows:
+        item = dict(row)
+        item["name"] = display_person_name(item.get("name"))
+        persons.append(item)
+    return {"persons": persons}
 
 
 @router.post("/persons", dependencies=[Depends(rate_limit_write)])
@@ -177,6 +189,64 @@ async def _broadcast_enrollment_reload(
         # reload broadcast hiccuped.  Operator can still hit the manual
         # POWER CYCLE button on the dashboard.
         pass
+
+
+async def _broadcast_profile_reload(redis: aioredis.Redis, person_id: str, reason: str) -> None:
+    try:
+        await publish(
+            redis,
+            Channels.SYSTEM_RELOAD,
+            {
+                "reload_id": secrets.token_hex(8),
+                "services": ["vision", "audio", "brain"],
+                "reason": reason,
+                "person_id": person_id,
+            },
+        )
+    except Exception:
+        pass
+
+
+@router.put("/persons/{person_id}", dependencies=[Depends(rate_limit_write)])
+async def update_person(
+    person_id: str,
+    req: UpdatePersonRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    """Update an enrolled person's display name or role."""
+    row = db.execute(
+        "SELECT id, name, role FROM persons WHERE id = ? AND active = 1",
+        (person_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    name = validate_name(req.name) if req.name is not None else row["name"]
+    role = validate_role(req.role) if req.role is not None else row["role"]
+    db.execute("UPDATE persons SET name = ?, role = ? WHERE id = ?", (name, role, person_id))
+    db.commit()
+
+    # Web-local recognizer caches include names/roles; long-running services do too.
+    global _face_recognizer, _speaker_identifier
+    _face_recognizer = None
+    _speaker_identifier = None
+
+    # Update the live visible-person cache when this subject is currently on screen.
+    try:
+        raw = await redis.hget(Keys.VISIBLE_PERSONS, person_id)
+        if raw:
+            data = json.loads(raw)
+            data["name"] = name
+            data["role"] = role
+            await redis.hset(Keys.VISIBLE_PERSONS, person_id, json.dumps(data))
+    except Exception:
+        pass
+
+    await redis.delete("state:last_speaker")
+    await _broadcast_profile_reload(redis, person_id, reason="person_updated")
+
+    return {"person_id": person_id, "name": name, "role": role}
 
 
 @router.post("/persons/{person_id}/face", dependencies=[Depends(rate_limit_enroll)])
@@ -264,7 +334,7 @@ async def capture_face(
 
     return EnrollmentStatus(
         person_id=person_id,
-        name=row["name"],
+        name=display_person_name(row["name"]) or row["name"],
         role=row["role"],
         face_samples=total_samples,
         required_samples=required,
@@ -408,7 +478,7 @@ async def enrollment_status(
 
     return {
         "person_id": person_id,
-        "name": row["name"],
+        "name": display_person_name(row["name"]) or row["name"],
         "role": row["role"],
         "face_samples": face_samples,
         "face_required": config.identity.enrollment_face_samples,

@@ -25,6 +25,7 @@ KNOWN_SETTINGS: frozenset[str] = frozenset(
     {
         "anthropic_api_key",
         "groq_api_key",
+        "tts_voice",
     }
 )
 

@@ -227,7 +227,7 @@ export default function Layout() {
       : "";
 
   return (
-    <div className={["min-h-dvh flex", rootAnim].filter(Boolean).join(" ")}>
+    <div className={["h-dvh overflow-hidden flex", rootAnim].filter(Boolean).join(" ")}>
       {flashHandoff && <div className="power-flash-in" aria-hidden="true" />}
       {flashRamp && <div className="power-flash" aria-hidden="true" />}
       <WakeIndicator />
@@ -405,7 +405,7 @@ export default function Layout() {
       )}
 
       {/* ===== MAIN COLUMN ===== */}
-      <div className="flex-1 min-w-0 flex flex-col">
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col">
         {/* Command bar */}
         <header className="sticky top-0 z-40 bg-[#05080f]/90 backdrop-blur border-b border-[#1c2540]">
           <div className="flex items-center gap-3 h-16 px-4 md:px-6">
@@ -463,9 +463,11 @@ export default function Layout() {
 
         <main
           key={location.pathname}
-          className="flex-1 px-4 md:px-6 py-6 max-w-[1600px] w-full mx-auto page-in"
+          className="flex-1 min-h-0 overflow-y-auto px-4 md:px-6 py-6 page-in"
         >
-          <Outlet />
+          <div className="max-w-[1600px] w-full mx-auto">
+            <Outlet />
+          </div>
         </main>
 
         <footer className="border-t border-[#1c2540] px-4 md:px-6 py-3 font-data text-[10px] uppercase tracking-[0.18em] text-gray-600 flex items-center justify-between gap-3">

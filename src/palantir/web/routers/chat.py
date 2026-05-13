@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from palantir.models import Utterance
+from palantir.names import display_person_name
 from palantir.redis_client import Channels, publish
 from palantir.web.dependencies import get_db, get_redis, verify_auth
 from palantir.web.rate_limit import rate_limit_read, rate_limit_write
@@ -61,7 +62,7 @@ async def list_history(
                 "user_text": r["user_text"],
                 "assistant_text": r["assistant_text"],
                 "person_id": r["person_id"],
-                "person_name": r["person_name"],
+                "person_name": display_person_name(r["person_name"]),
             }
             for r in rows
         ],
@@ -96,3 +97,11 @@ async def send_text_message(
     )
     await publish(redis, Channels.AUDIO_UTTERANCE, utterance)
     return {"queued": True, "text": text}
+
+
+@router.delete("/history", dependencies=[Depends(rate_limit_write)])
+async def clear_history(db: sqlite3.Connection = Depends(get_db)):
+    """Delete all saved conversation turns."""
+    cursor = db.execute("DELETE FROM conversations")
+    db.commit()
+    return {"cleared": True, "deleted": cursor.rowcount}

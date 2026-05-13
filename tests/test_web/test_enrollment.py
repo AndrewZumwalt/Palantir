@@ -12,9 +12,17 @@ from palantir.web.routers import enrollment
 class FakeRedis:
     def __init__(self):
         self.hdel_calls: list[tuple[str, str]] = []
+        self.hget_values: dict[tuple[str, str], str] = {}
+        self.hset_calls: list[tuple[str, str, str]] = []
         self.srem_calls: list[tuple[str, str]] = []
         self.delete_calls: list[tuple[str, ...]] = []
         self.published: list[tuple[str, str]] = []
+
+    async def hget(self, key: str, field: str) -> str | None:
+        return self.hget_values.get((key, field))
+
+    async def hset(self, key: str, field: str, value: str) -> None:
+        self.hset_calls.append((key, field, value))
 
     async def hdel(self, key: str, field: str) -> None:
         self.hdel_calls.append((key, field))
@@ -34,6 +42,55 @@ def test_next_sample_index_uses_highest_existing_index(tmp_path):
     (tmp_path / "face_002.jpg").write_bytes(b"third")
 
     assert enrollment._next_sample_index(tmp_path, "face_*.jpg", "face_") == 3
+
+
+async def test_update_person_changes_profile_and_publishes_reload(temp_db):
+    person_id = "person-1"
+    temp_db.execute(
+        "INSERT INTO persons (id, name, role) VALUES (?, ?, ?)",
+        (person_id, "Lovelace, Ada", "student"),
+    )
+    temp_db.commit()
+
+    enrollment._face_recognizer = object()
+    enrollment._speaker_identifier = object()
+    redis = FakeRedis()
+    redis.hget_values[(Keys.VISIBLE_PERSONS, person_id)] = json.dumps(
+        {
+            "person_id": person_id,
+            "name": "Ada Lovelace",
+            "role": "student",
+            "bbox": {"x": 1, "y": 2, "width": 3, "height": 4},
+        }
+    )
+
+    result = await enrollment.update_person(
+        person_id,
+        enrollment.UpdatePersonRequest(name="Byron, Ada", role="teacher"),
+        db=temp_db,
+        redis=redis,
+    )
+
+    assert result == {"person_id": person_id, "name": "Ada Byron", "role": "teacher"}
+    row = temp_db.execute(
+        "SELECT name, role FROM persons WHERE id = ?",
+        (person_id,),
+    ).fetchone()
+    assert dict(row) == {"name": "Ada Byron", "role": "teacher"}
+    assert enrollment._face_recognizer is None
+    assert enrollment._speaker_identifier is None
+    assert redis.delete_calls == [("state:last_speaker",)]
+    assert len(redis.hset_calls) == 1
+    visible = json.loads(redis.hset_calls[0][2])
+    assert visible["name"] == "Ada Byron"
+    assert visible["role"] == "teacher"
+
+    channel, payload = redis.published[0]
+    message = json.loads(payload)
+    assert channel == Channels.SYSTEM_RELOAD
+    assert message["services"] == ["vision", "audio", "brain"]
+    assert message["reason"] == "person_updated"
+    assert message["person_id"] == person_id
 
 
 async def test_unenroll_clears_caches_and_publishes_reload(temp_db, config, tmp_path):

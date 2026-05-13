@@ -13,6 +13,8 @@ import re
 
 from fastapi import HTTPException
 
+from palantir.names import display_person_name
+
 # Hard ceilings. Tuned for classroom use on a Pi: a typical enrollment photo
 # is ~100-300KB JPEG, and a 5s voice clip at 16kHz int16 is ~160KB.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB decoded
@@ -45,7 +47,7 @@ def validate_name(name: str) -> str:
             status_code=400,
             detail="Name contains disallowed characters",
         )
-    return name
+    return display_person_name(name) or name
 
 
 def validate_role(role: str) -> str:

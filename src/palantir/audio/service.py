@@ -7,6 +7,7 @@ Pipeline: mic -> wake word -> VAD -> STT -> publish utterance to Redis
 from __future__ import annotations
 
 import asyncio
+import json
 import signal
 import time
 
@@ -362,12 +363,35 @@ class AudioService:
                     )
                     await publish(self._redis, Channels.AUDIO_SPEAKER_ID, speaker_msg)
 
+            if speaker_person_id:
+                # Store before publishing the utterance so the brain cannot
+                # race ahead and read the previous speaker. The utterance also
+                # carries these fields directly; this Redis key is now only a
+                # short-lived compatibility fallback.
+                await self._redis.set(
+                    "state:last_speaker",
+                    json.dumps(
+                        {
+                            "person_id": speaker_person_id,
+                            "name": speaker_name,
+                            "confidence": speaker_confidence,
+                            "timestamp": time.time(),
+                        }
+                    ),
+                    ex=30,  # Expires after 30 seconds
+                )
+            else:
+                await self._redis.delete("state:last_speaker")
+
             # Build and publish the utterance with speaker info
             utterance = Utterance(
                 text=text,
                 speaker_embedding=(
                     speaker_embedding.tolist() if speaker_embedding is not None else None
                 ),
+                speaker_person_id=speaker_person_id,
+                speaker_name=speaker_name,
+                speaker_confidence=speaker_confidence,
                 duration_seconds=round(duration, 2),
                 source="voice",
             )
@@ -379,23 +403,6 @@ class AudioService:
                 duration=round(duration, 2),
             )
             await publish(self._redis, Channels.AUDIO_UTTERANCE, utterance)
-
-            # Also publish speaker ID separately so brain can correlate.
-            # JSON-encode to stay robust against names that contain colons.
-            if speaker_person_id:
-                import json as _json
-
-                await self._redis.set(
-                    "state:last_speaker",
-                    _json.dumps(
-                        {
-                            "person_id": speaker_person_id,
-                            "name": speaker_name,
-                            "confidence": speaker_confidence,
-                        }
-                    ),
-                    ex=30,  # Expires after 30 seconds
-                )
         except Exception as exc:
             logger.exception("utterance_processing_failed")
             await self._publish_audio_state("error", message=str(exc))

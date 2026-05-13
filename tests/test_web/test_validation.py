@@ -23,6 +23,10 @@ def test_validate_name_trims_and_returns():
     assert validate_name("  Alice  ") == "Alice"
 
 
+def test_validate_name_converts_roster_order():
+    assert validate_name("  Knox, Romeo  ") == "Romeo Knox"
+
+
 def test_validate_name_rejects_empty():
     with pytest.raises(HTTPException) as exc:
         validate_name("   ")

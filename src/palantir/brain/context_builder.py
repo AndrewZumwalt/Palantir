@@ -14,6 +14,7 @@ from datetime import datetime
 import redis.asyncio as aioredis
 import structlog
 
+from palantir.names import display_person_name
 from palantir.redis_client import Keys
 
 logger = structlog.get_logger()
@@ -55,7 +56,7 @@ class ContextBuilder:
             for person_id, data_str in visible_data.items():
                 try:
                     data = json.loads(data_str)
-                    name = data.get("name", "Unknown")
+                    name = display_person_name(data.get("name")) or "Unknown"
                     role = data.get("role", "unknown")
                     names.append(f"  - {name} ({role})")
                 except (json.JSONDecodeError, TypeError):

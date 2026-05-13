@@ -6,6 +6,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from palantir.names import display_person_name
 from palantir.web.dependencies import get_db, verify_auth
 from palantir.web.rate_limit import rate_limit_read
 
@@ -35,7 +36,7 @@ async def get_current_session(db: sqlite3.Connection = Depends(get_db)):
 
     return {
         "session": dict(session),
-        "records": [dict(r) for r in records],
+        "records": [_attendance_record(r) for r in records],
     }
 
 
@@ -75,7 +76,7 @@ async def get_session_detail(
 
     return {
         "session": dict(session),
-        "records": [dict(r) for r in records],
+        "records": [_attendance_record(r) for r in records],
     }
 
 
@@ -94,3 +95,9 @@ async def get_person_attendance(
     ).fetchall()
 
     return {"person_id": person_id, "records": [dict(r) for r in records]}
+
+
+def _attendance_record(row) -> dict:
+    item = dict(row)
+    item["name"] = display_person_name(item.get("name"))
+    return item

@@ -8,6 +8,7 @@ import time
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Query
 
+from palantir.names import display_person_name
 from palantir.redis_client import Keys
 from palantir.web.dependencies import get_db, get_redis, verify_auth
 from palantir.web.rate_limit import rate_limit_read
@@ -49,10 +50,13 @@ async def get_current_attendance(
         list(present_ids),
     ).fetchall()
 
-    return {
-        "present": [dict(row) for row in rows],
-        "count": len(rows),
-    }
+    present = []
+    for row in rows:
+        item = dict(row)
+        item["name"] = display_person_name(item.get("name"))
+        present.append(item)
+
+    return {"present": present, "count": len(rows)}
 
 
 @router.get("/events/recent")

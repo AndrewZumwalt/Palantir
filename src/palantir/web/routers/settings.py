@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from palantir.models import PrivacyModeEvent
 from palantir.redis_client import Channels, Keys, publish
 from palantir.settings_store import KNOWN_SETTINGS, get_setting, set_setting
+from palantir.tts.voices import EDGE_VOICE_OPTIONS, is_known_voice
 from palantir.web.dependencies import get_db, get_redis, verify_auth
 from palantir.web.rate_limit import rate_limit_read, rate_limit_write
 
@@ -53,8 +54,10 @@ async def get_public_config(db: sqlite3.Connection = Depends(get_db)):
     # truth about which key the brain will actually use after reload.
     db_anthropic = get_setting(db, "anthropic_api_key")
     db_groq = get_setting(db, "groq_api_key")
+    db_tts_voice = get_setting(db, "tts_voice")
     anthropic_key = db_anthropic or cfg.anthropic_api_key
     groq_key = db_groq or cfg.groq_api_key
+    tts_voice = db_tts_voice or cfg.tts.voice
 
     llm_provider = (
         "anthropic" if anthropic_key else ("groq" if groq_key else "none")
@@ -89,6 +92,12 @@ async def get_public_config(db: sqlite3.Connection = Depends(get_db)):
         },
         "engagement": {
             "smoothing_window_seconds": cfg.engagement.smoothing_window_seconds,
+        },
+        "tts": {
+            "engine": cfg.tts.engine,
+            "voice": tts_voice,
+            "voice_source": "db" if db_tts_voice else "config",
+            "voices": EDGE_VOICE_OPTIONS,
         },
     }
 
@@ -151,3 +160,34 @@ async def set_api_keys(
     )
 
     return {"updated": changed, "reload_id": reload_id}
+
+
+class TTSSettingsRequest(BaseModel):
+    voice: str = Field(..., min_length=1, max_length=128)
+
+
+@router.post("/tts", dependencies=[Depends(rate_limit_write)])
+async def set_tts_settings(
+    req: TTSSettingsRequest,
+    db: sqlite3.Connection = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    """Persist the selected TTS voice and ask the TTS service to reload."""
+    voice = req.voice.strip()
+    if not is_known_voice(voice):
+        raise HTTPException(status_code=400, detail="Unknown TTS voice")
+
+    set_setting(db, "tts_voice", voice)
+
+    reload_id = _secrets.token_hex(8)
+    await publish(
+        redis,
+        Channels.SYSTEM_RELOAD,
+        {
+            "reload_id": reload_id,
+            "services": ["tts"],
+            "reason": "tts_voice_updated",
+        },
+    )
+
+    return {"voice": voice, "reload_id": reload_id}

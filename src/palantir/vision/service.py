@@ -18,6 +18,7 @@ from palantir.db import init_db
 from palantir.logging import setup_logging
 from palantir.models import (
     DetectedFace,
+    DetectedObject,
     Event,
     EventType,
     PrivacyModeEvent,
@@ -36,6 +37,7 @@ from palantir.redis_client import (
 from palantir.reload import handle_reload_request
 
 from .capture import CameraCapture, create_camera_capture
+from .person_tracker import PersonTrack, PersonTracker
 
 logger = structlog.get_logger()
 
@@ -80,6 +82,7 @@ class VisionService:
         self._start_time = time.monotonic()
         self._last_frame_count = 0
         self._last_live_frame_publish = 0.0
+        self._last_latest_frame_published_at: float | None = None
 
         # Face detection/recognition
         self._face_detector: FaceDetector | None = None
@@ -96,14 +99,16 @@ class VisionService:
         self._last_exit_check = time.monotonic()
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        # Per-person "last detected this frame or recently" timestamps.  The
-        # attendance tracker uses a 5-minute exit timeout (correct for class
-        # attendance: a brief look-away shouldn't log an exit), but the
-        # brain's visible_persons context needs to track "who's literally
-        # in front of the camera RIGHT NOW".  We prune entries from
-        # state:visible_persons that haven't been seen in VISIBLE_TIMEOUT
-        # seconds so the LLM doesn't keep saying "Andrew is here" after
-        # Andrew walks out.
+        # Recognition tags a face once; this tracker keeps that identity alive
+        # through short face-loss gaps and lets pose boxes extend it when the
+        # person turns away from the camera.
+        self._person_tracker = PersonTracker(
+            hold_seconds=max(8.0, self._config.identity.identity_staleness_seconds)
+        )
+
+        # Per-person "last tracked this frame or recently" timestamps. The
+        # tracker handles recognized people; this map also lets us prune any
+        # legacy/stale Redis entries that predate the current process.
         self._last_visible_at: dict[str, float] = {}
         self._visible_timeout_seconds: float = 3.0
 
@@ -128,6 +133,8 @@ class VisionService:
         # stale entry left by a dead process and a legitimate one.
         try:
             await self._redis.delete(Keys.VISIBLE_PERSONS, Keys.PRESENT_PERSONS)
+            self._person_tracker.clear()
+            self._last_visible_at.clear()
             logger.info("visible_persons_cleared_on_startup")
         except Exception:
             logger.warning("visible_persons_clear_failed", exc_info=True)
@@ -224,20 +231,52 @@ class VisionService:
                 await self._redis.set(
                     Keys.LATEST_FRAME, jpeg_buf.tobytes(), ex=30
                 )
+                published_at = time.time()
+                self._last_latest_frame_published_at = published_at
+                await self._redis.set(
+                    Keys.LATEST_FRAME_META,
+                    json.dumps(
+                        {
+                            "frame_number": frame_num,
+                            "published_at": published_at,
+                            "mode": self._current_camera_mode,
+                            "device": self._camera_device(),
+                        }
+                    ),
+                    ex=30,
+                )
+        else:
+            self._last_latest_frame_published_at = time.time()
 
         # Tier 1: Face detection (every frame)
         if frame_num % cam_cfg.face_detection_interval == 0:
             await self._detect_faces(frame)
 
-        # Tier 2: Engagement analysis (every 5th frame)
-        if frame_num % cam_cfg.engagement_interval == 0:
+        # Tier 2: Engagement/body analysis. Run faster while a tagged person
+        # is being tracked so the overlay follows movement after face loss.
+        engagement_interval = max(1, cam_cfg.engagement_interval)
+        if self._person_tracker.active_tracks(now=time.monotonic()):
+            engagement_interval = min(engagement_interval, 2)
+        if frame_num % engagement_interval == 0:
             await self._analyze_engagement(frame)
+
+        # If pose tracking is unavailable or loses the body, normal YOLO
+        # person boxes still give us a moving body rectangle to keep a
+        # recognized identity attached while the face is covered.
+        object_interval = max(1, cam_cfg.object_detection_interval)
+        should_detect_objects = frame_num % object_interval == 0
+        should_track_people_with_objects = (
+            bool(self._person_tracker.active_tracks(now=time.monotonic()))
+            and frame_num % 2 == 0
+        )
+        if should_track_people_with_objects and not should_detect_objects:
+            await self._track_person_objects(frame)
 
         # Tier 3: Object detection (every 30th frame).  LATEST_FRAME is
         # already warm above for cloud-vision lookups, so we only run
         # the detector here.
-        if frame_num % cam_cfg.object_detection_interval == 0:
-            await self._detect_objects(frame)
+        if should_detect_objects:
+            await self._detect_objects(frame, update_person_tracks=True)
 
         # Periodic exit check for attendance.  The original 30s cadence
         # made the dashboard's Present panel feel broken: even with a 10s
@@ -260,56 +299,65 @@ class VisionService:
             None, self._face_detector.detect, frame
         )
 
-        # Always publish, even with zero detections: the dashboard's
+        # Always publish, even with zero face detections: the dashboard's
         # "Subjects in frame" count subscribes to this channel and stays
-        # sticky on the last non-empty value if we skip empty frames --
-        # so a person walking out of view leaves the count frozen.
-        detected_faces = []
+        # sticky on the last non-empty value if we skip empty frames.
+        detected_faces: list[DetectedFace] = []
+        recognized_ids: set[str] = set()
+        detection_boxes = [det.bbox for det in detections]
+        now = time.monotonic()
+
         for det in detections:
             face_msg = DetectedFace(
                 bbox=det.bbox,
                 confidence=det.det_score,
+                source="face",
             )
 
             # Try to recognize the face
             if det.embedding is not None and self._face_recognizer:
                 result = self._face_recognizer.recognize(det.embedding)
-                if result.matched:
+                if result.matched and result.person_id:
                     face_msg.person_id = result.person_id
                     face_msg.name = result.name
                     face_msg.confidence = result.confidence
 
-                    # Update attendance
-                    if self._attendance_tracker and result.person_id:
-                        is_new = self._attendance_tracker.person_seen(result.person_id)
-                        if is_new:
-                            # Publish entry event
-                            event = Event(
-                                type=EventType.PERSON_ENTERED,
-                                person_id=result.person_id,
-                                data={"name": result.name},
-                            )
-                            await publish(self._redis, Channels.EVENTS_LOG, event)
-
-                    # Update visible persons in Redis
-                    visible = VisiblePerson(
+                    track = self._person_tracker.update_face(
                         person_id=result.person_id,
-                        name=result.name,
+                        name=result.name or result.person_id,
                         role=result.role or "student",
                         bbox=det.bbox,
+                        confidence=result.confidence,
+                        now=now,
                     )
-                    await self._redis.hset(
-                        Keys.VISIBLE_PERSONS,
-                        result.person_id,
-                        visible.model_dump_json(),
-                    )
-                    # Add to present set
-                    await self._redis.sadd(Keys.PRESENT_PERSONS, result.person_id)
-                    # Mark as freshly visible so the prune step below leaves
-                    # this entry alone.
-                    self._last_visible_at[result.person_id] = time.monotonic()
+                    recognized_ids.add(result.person_id)
+                    await self._mark_track_visible(track, update_attendance=True)
 
             detected_faces.append(face_msg)
+
+        # If the face is gone but we recently tagged the person, keep the
+        # identity visible. Pose/body tracking refreshes the bbox in
+        # _analyze_engagement; otherwise this decays out after hold_seconds.
+        for track in self._person_tracker.active_tracks(
+            now=now,
+            exclude=recognized_ids,
+        ):
+            if any(self._bbox_iou(track.bbox, bbox) > 0.35 for bbox in detection_boxes):
+                continue
+            detected_faces.append(
+                DetectedFace(
+                    person_id=track.person_id,
+                    name=track.name,
+                    confidence=self._person_tracker.confidence_for(track, now=now),
+                    bbox=track.bbox,
+                    source="body" if track.source == "body" else "track",
+                )
+            )
+            await self._mark_track_visible(track, update_attendance=True)
+
+        expired_ids = self._person_tracker.expire(now=now)
+        if expired_ids:
+            await self._remove_visible_people(expired_ids)
 
         # Publish detected faces
         faces_data = [f.model_dump() for f in detected_faces]
@@ -325,11 +373,77 @@ class VisionService:
         # separate so a brief look-away doesn't log a phantom exit.
         await self._prune_stale_visible()
 
+    async def _mark_track_visible(
+        self,
+        track: PersonTrack,
+        *,
+        update_attendance: bool,
+    ) -> None:
+        """Refresh Redis/dashboard state for a known tracked person."""
+        if not self._redis:
+            return
+
+        if update_attendance and self._attendance_tracker:
+            is_new = self._attendance_tracker.person_seen(track.person_id)
+            if is_new:
+                event = Event(
+                    type=EventType.PERSON_ENTERED,
+                    person_id=track.person_id,
+                    data={"name": track.name},
+                )
+                await publish(self._redis, Channels.EVENTS_LOG, event)
+
+        visible = VisiblePerson(
+            person_id=track.person_id,
+            name=track.name,
+            role=track.role,
+            bbox=track.bbox,
+        )
+        await self._redis.hset(
+            Keys.VISIBLE_PERSONS,
+            track.person_id,
+            visible.model_dump_json(),
+        )
+        await self._redis.sadd(Keys.PRESENT_PERSONS, track.person_id)
+        self._last_visible_at[track.person_id] = time.monotonic()
+
+    async def _remove_visible_people(self, person_ids: list[str]) -> None:
+        if not self._redis or not person_ids:
+            return
+        try:
+            await self._redis.hdel(Keys.VISIBLE_PERSONS, *person_ids)
+        except Exception:
+            logger.debug("visible_remove_failed", ids=person_ids, exc_info=True)
+        for person_id in person_ids:
+            self._last_visible_at.pop(person_id, None)
+
+    @staticmethod
+    def _bbox_iou(a, b) -> float:
+        ax2 = a.x + a.width
+        ay2 = a.y + a.height
+        bx2 = b.x + b.width
+        by2 = b.y + b.height
+        ix1 = max(a.x, b.x)
+        iy1 = max(a.y, b.y)
+        ix2 = min(ax2, bx2)
+        iy2 = min(ay2, by2)
+        iw = max(0, ix2 - ix1)
+        ih = max(0, iy2 - iy1)
+        intersection = iw * ih
+        if intersection <= 0:
+            return 0.0
+        area_a = max(1, a.width * a.height)
+        area_b = max(1, b.width * b.height)
+        return intersection / (area_a + area_b - intersection)
+
     async def _prune_stale_visible(self) -> None:
         """Remove visible_persons entries that haven't been re-detected recently."""
         if not self._redis:
             return
         now = time.monotonic()
+        expired_ids = self._person_tracker.expire(now=now)
+        if expired_ids:
+            await self._remove_visible_people(expired_ids)
         cutoff = now - self._visible_timeout_seconds
         stale_ids: list[str] = []
         for person_id, last_at in list(self._last_visible_at.items()):
@@ -373,13 +487,29 @@ class VisionService:
 
         # Enrich with names from visible persons
         visible_raw = await self._redis.hgetall(Keys.VISIBLE_PERSONS) if self._redis else {}
+        now = time.monotonic()
         for eng in engagements:
+            resolved_person_id = self._resolve_engagement_identity(eng, now=now)
+            if resolved_person_id:
+                eng.person_id = resolved_person_id
+
             if eng.person_id in visible_raw:
                 try:
                     vp = json.loads(visible_raw[eng.person_id])
                     eng.name = vp.get("name")
                 except (json.JSONDecodeError, KeyError):
                     pass
+
+            if eng.bbox and self._person_tracker.get(eng.person_id):
+                track = self._person_tracker.update_body(
+                    eng.person_id,
+                    eng.bbox,
+                    body_track_id=eng.track_id,
+                    now=now,
+                )
+                if track:
+                    eng.name = track.name
+                    await self._mark_track_visible(track, update_attendance=True)
 
         # Publish engagement data to Redis for dashboard + eventlog
         engagement_data = [e.model_dump(mode="json") for e in engagements]
@@ -391,7 +521,88 @@ class VisionService:
             states=[e.state.value for e in engagements],
         )
 
-    async def _detect_objects(self, frame) -> None:
+    def _resolve_engagement_identity(self, eng, *, now: float) -> str | None:
+        """Attach a pose/body result to an already-tagged person if possible."""
+        if not eng.bbox:
+            return None
+
+        if not eng.person_id.startswith("unknown_") and self._person_tracker.get(eng.person_id):
+            if eng.track_id is not None:
+                self._person_tracker.bind_body_track(eng.person_id, eng.track_id)
+            return eng.person_id
+
+        if eng.track_id is not None:
+            person_id = self._person_tracker.person_for_body_track(eng.track_id, now=now)
+            if person_id:
+                return person_id
+
+        person_id = self._person_tracker.match_body_bbox(
+            eng.bbox,
+            now=now,
+            allow_single_active=True,
+        )
+        if person_id and eng.track_id is not None:
+            self._person_tracker.bind_body_track(person_id, eng.track_id)
+        return person_id
+
+    async def _track_person_objects(self, frame) -> None:
+        """Use object-detected person boxes as a fallback body tracker."""
+        if not self._object_detector or not self._object_detector.is_available:
+            return
+
+        objects = await self._loop.run_in_executor(
+            None,
+            self._object_detector.detect,
+            frame,
+        )
+        await self._update_tracks_from_person_objects(objects)
+
+    async def _update_tracks_from_person_objects(
+        self,
+        objects: list[DetectedObject],
+        *,
+        now: float | None = None,
+    ) -> None:
+        """Refresh known person tracks from generic YOLO person boxes."""
+        if not objects:
+            return
+        now = time.monotonic() if now is None else now
+        active = self._person_tracker.active_tracks(now=now)
+        if not active:
+            return
+
+        person_objects = [
+            obj
+            for obj in objects
+            if obj.label.lower() == "person" and obj.confidence >= 0.35
+        ]
+        if not person_objects:
+            return
+
+        person_objects.sort(
+            key=lambda obj: obj.bbox.width * obj.bbox.height,
+            reverse=True,
+        )
+        used_person_ids: set[str] = set()
+        allow_single = len(active) == 1
+        for obj in person_objects:
+            person_id = self._person_tracker.match_body_bbox(
+                obj.bbox,
+                now=now,
+                allow_single_active=allow_single,
+            )
+            if not person_id or person_id in used_person_ids:
+                continue
+            track = self._person_tracker.update_body(
+                person_id,
+                obj.bbox,
+                now=now,
+            )
+            if track:
+                used_person_ids.add(person_id)
+                await self._mark_track_visible(track, update_attendance=True)
+
+    async def _detect_objects(self, frame, *, update_person_tracks: bool = False) -> None:
         """Run YOLO object detection and cache results in Redis."""
         if not self._object_detector or not self._object_detector.is_available:
             return
@@ -403,6 +614,9 @@ class VisionService:
 
         if not objects:
             return
+
+        if update_person_tracks:
+            await self._update_tracks_from_person_objects(objects)
 
         # Cache object list in Redis for the brain to query
         objects_data = [obj.model_dump() for obj in objects]
@@ -432,6 +646,8 @@ class VisionService:
             # Remove from Redis state
             await self._redis.hdel(Keys.VISIBLE_PERSONS, person_id)
             await self._redis.srem(Keys.PRESENT_PERSONS, person_id)
+            self._person_tracker.remove(person_id)
+            self._last_visible_at.pop(person_id, None)
 
             # Publish exit event
             event = Event(
@@ -452,6 +668,8 @@ class VisionService:
                 present_ids.update(self._attendance_tracker.clear_present())
 
             await self._redis.delete(Keys.VISIBLE_PERSONS, Keys.PRESENT_PERSONS)
+            self._person_tracker.clear()
+            self._last_visible_at.clear()
             for person_id in present_ids:
                 exit_event = Event(
                     type=EventType.PERSON_EXITED,
@@ -559,6 +777,8 @@ class VisionService:
             # picked up without a restart.
             if self._face_recognizer:
                 self._face_recognizer.reload_profiles()
+            self._person_tracker.clear()
+            self._last_visible_at.clear()
             # Reset engagement smoothing window — stale pose history causes
             # "stuck" engagement states after misclassifications.
             if self._engagement_classifier and hasattr(
@@ -597,6 +817,11 @@ class VisionService:
                 "device": self._camera_device(),
                 "fps": self._camera.fps if self._camera else 0.0,
                 "frames_processed": self._last_frame_count,
+                "latest_frame_age_ms": (
+                    int((time.time() - self._last_latest_frame_published_at) * 1000)
+                    if self._last_latest_frame_published_at
+                    else None
+                ),
                 "face_detection": _FACE_AVAILABLE,
                 "engagement_active": (
                     _ENGAGEMENT_AVAILABLE and self._engagement_classifier is not None

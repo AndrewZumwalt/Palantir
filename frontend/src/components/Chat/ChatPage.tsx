@@ -1,4 +1,4 @@
-import { Activity, MessageSquare, Mic, Radio, Send, User } from "lucide-react";
+import { Activity, MessageSquare, Mic, Radio, Send, Trash2, User } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { useWebSocket } from "../../hooks/useWebSocket";
@@ -47,6 +47,7 @@ export default function ChatPage() {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [voicePhase, setVoicePhase] = useState<VoicePhase>("idle");
   const [micLevel, setMicLevel] = useState(0);
@@ -207,6 +208,26 @@ export default function ChatPage() {
     [],
   );
 
+  const handleClear = useCallback(async () => {
+    if (clearing || !window.confirm("Clear the conversation log?")) return;
+    setClearing(true);
+    setError(null);
+    try {
+      await api.delete<{ cleared: boolean; deleted: number }>("/chat/history");
+      lastIdRef.current = 0;
+      setTurns([]);
+      setLiveTurn(null);
+      setPendingSince(null);
+      setLastHeard(null);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to clear chat history";
+      setError(message);
+    } finally {
+      setClearing(false);
+    }
+  }, [clearing]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
@@ -282,9 +303,21 @@ export default function ChatPage() {
         title="Transcript"
         label="I/O"
         meta={
-          <StatusPill tone="cyan" size="xs">
-            {ordered.length} TURN{ordered.length === 1 ? "" : "S"}
-          </StatusPill>
+          <>
+            <StatusPill tone="cyan" size="xs">
+              {ordered.length} TURN{ordered.length === 1 ? "" : "S"}
+            </StatusPill>
+            <button
+              type="button"
+              onClick={handleClear}
+              disabled={clearing || (ordered.length === 0 && !liveTurn)}
+              title="Clear conversation log"
+              aria-label="Clear conversation log"
+              className="h-7 w-7 inline-flex items-center justify-center border border-[#1c2540] text-gray-500 hover:text-red-300 hover:border-red-700/60 disabled:opacity-40"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </>
         }
       >
         <div

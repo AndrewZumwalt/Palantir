@@ -1,6 +1,7 @@
 import { Clock, DoorOpen } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { useWebSocket } from "../../hooks/useWebSocket";
 import { EmptyState, LoadingLines } from "../ui/EmptyState";
 import { Panel } from "../ui/Panel";
 import { StatusPill } from "../ui/StatusPill";
@@ -17,6 +18,14 @@ interface AttendanceRecord {
 interface SessionData {
   session: { id: string; name: string; started_at: string } | null;
   records: AttendanceRecord[];
+}
+
+interface DetectedFace {
+  person_id?: string | null;
+}
+
+interface PersonEngagement {
+  person_id: string;
 }
 
 function formatTime(iso: string) {
@@ -36,8 +45,10 @@ function formatDuration(seconds: number | null) {
 }
 
 export default function AttendancePanel() {
+  const { subscribe } = useWebSocket();
   const [data, setData] = useState<SessionData | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [unidentified, setUnidentified] = useState({ count: 0, lastSeen: 0 });
 
   useEffect(() => {
     const load = async () => {
@@ -58,6 +69,34 @@ export default function AttendancePanel() {
     const interval = setInterval(load, 3000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    const markUnidentified = (count: number) => {
+      if (count > 0) setUnidentified({ count, lastSeen: Date.now() });
+    };
+    const offFaces = subscribe("vision:faces", (payload) => {
+      const faces = (payload.faces as DetectedFace[]) ?? [];
+      markUnidentified(faces.filter((face) => !face.person_id).length);
+    });
+    const offEngagement = subscribe("vision:engagement", (payload) => {
+      const engagements = (payload.engagements as PersonEngagement[]) ?? [];
+      markUnidentified(
+        engagements.filter((eng) => eng.person_id.startsWith("unknown_")).length,
+      );
+    });
+    const interval = setInterval(() => {
+      setUnidentified((current) =>
+        current.count > 0 && Date.now() - current.lastSeen > 3500
+          ? { count: 0, lastSeen: 0 }
+          : current,
+      );
+    }, 1000);
+    return () => {
+      offFaces();
+      offEngagement();
+      clearInterval(interval);
+    };
+  }, [subscribe]);
 
   if (!loaded) {
     return (
@@ -81,6 +120,7 @@ export default function AttendancePanel() {
 
   const present = data.records.filter((r) => !r.exited_at);
   const departed = data.records.filter((r) => r.exited_at);
+  const unidentifiedRows = Array.from({ length: unidentified.count }, (_, index) => index);
 
   return (
     <Panel
@@ -105,6 +145,23 @@ export default function AttendancePanel() {
             </div>
             <span className="font-data text-[10px] text-gray-500 shrink-0 uppercase tracking-[0.12em]">
               IN @ {formatTime(r.entered_at)}
+            </span>
+          </div>
+        ))}
+
+        {unidentifiedRows.map((index) => (
+          <div
+            key={`unidentified-${index}`}
+            className="flex items-center justify-between gap-3 py-1.5"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 pulse-dot shrink-0" />
+              <span className="text-sm text-amber-100 truncate">
+                Unidentified
+              </span>
+            </div>
+            <span className="font-data text-[10px] text-amber-500 shrink-0 uppercase tracking-[0.12em]">
+              LIVE
             </span>
           </div>
         ))}
@@ -135,7 +192,7 @@ export default function AttendancePanel() {
           </>
         )}
 
-        {data.records.length === 0 && (
+        {data.records.length === 0 && unidentifiedRows.length === 0 && (
           <div className="py-8 text-center font-data text-xs text-gray-500">
             &gt; AWAITING FIRST DETECTION
           </div>

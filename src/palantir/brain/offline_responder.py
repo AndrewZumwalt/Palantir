@@ -27,6 +27,11 @@ _ATTENDANCE_PATTERNS = [
     r"\bhow many\b.*\b(people|students)\b",
     r"\battendance\b",
 ]
+_SPEAKER_PATTERNS = [
+    r"\bwho('s| is)? talking\b",
+    r"\bwho('s| is)? speaking\b",
+    r"\bwho am i\b",
+]
 _HELP_PATTERNS = [r"\bhelp\b", r"\bwhat can you do\b"]
 _GOODBYE_PATTERNS = [r"\bgoodbye\b", r"\bbye\b", r"\bsee you\b"]
 
@@ -90,6 +95,11 @@ def generate_offline_response(
             f"There are {len(visible_person_names)} people here: "
             f"{names}, and {visible_person_names[-1]}."
         )
+
+    if _matches(text, _SPEAKER_PATTERNS):
+        if speaker_name:
+            return f"{speaker_name} is talking right now."
+        return "I can hear someone talking, but I could not match the voice to an enrolled profile."
 
     if _matches(text, _GREETING_PATTERNS):
         greeting = random.choice(_GREETINGS)

@@ -1,5 +1,5 @@
 import { Activity, Grid3x3, TableProperties } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { useWebSocket } from "../../hooks/useWebSocket";
 import { EmptyState, LoadingLines } from "../ui/EmptyState";
@@ -28,6 +28,11 @@ interface LiveEngagement {
   confidence: number;
 }
 
+interface LiveSnapshot {
+  timestamp: string;
+  engagements: LiveEngagement[];
+}
+
 type StateKey =
   | "working"
   | "collaborating"
@@ -54,6 +59,24 @@ const STATE_DOT: Record<string, string> = {
   unknown: "bg-gray-600",
 };
 
+const STATE_LABEL: Record<string, string> = {
+  working: "working",
+  collaborating: "collab",
+  phone: "phone",
+  sleeping: "sleeping",
+  disengaged: "slacking",
+  unknown: "tracking",
+};
+
+const STATE_WEIGHT: Record<string, number> = {
+  working: 1,
+  collaborating: 1.2,
+  phone: 0,
+  sleeping: 0,
+  disengaged: 0.2,
+  unknown: 0.5,
+};
+
 type Tab = "live" | "scores" | "heatmap";
 
 const TABS: { key: Tab; label: string; code: string; icon: typeof Activity }[] = [
@@ -68,11 +91,52 @@ function scoreBand(score: number): "green" | "amber" | "red" {
   return "green";
 }
 
+function buildLiveScores(snapshots: LiveSnapshot[], liveStates: LiveEngagement[]) {
+  const source =
+    snapshots.length > 0
+      ? snapshots.flatMap((snapshot) => snapshot.engagements)
+      : liveStates;
+  const grouped = new Map<string, EngagementScore>();
+
+  for (const eng of source) {
+    if (eng.person_id.startsWith("unknown_")) continue;
+    const current =
+      grouped.get(eng.person_id) ??
+      ({
+        person_id: eng.person_id,
+        name: eng.name || eng.person_id,
+        score: 0,
+        total_samples: 0,
+        breakdown: {},
+      } satisfies EngagementScore);
+    current.breakdown[eng.state] = (current.breakdown[eng.state] ?? 0) + 1;
+    current.total_samples += 1;
+    grouped.set(eng.person_id, current);
+  }
+
+  return Array.from(grouped.values())
+    .map((score) => {
+      const weighted = Object.entries(score.breakdown).reduce(
+        (sum, [state, count]) => sum + (STATE_WEIGHT[state] ?? 0.5) * count,
+        0,
+      );
+      return {
+        ...score,
+        score: score.total_samples
+          ? Math.round((weighted / score.total_samples) * 1000) / 10
+          : 0,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
 export default function EngagementPage() {
   const [sessionData, setSessionData] = useState<SessionInfo | null>(null);
   const [liveStates, setLiveStates] = useState<LiveEngagement[]>([]);
+  const [liveHistory, setLiveHistory] = useState<LiveSnapshot[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<Tab>("live");
+  const lastSnapshotAt = useRef(0);
   const { subscribe } = useWebSocket();
 
   useEffect(() => {
@@ -86,7 +150,25 @@ export default function EngagementPage() {
   useEffect(() => {
     const unsub = subscribe("vision:engagement", (data) => {
       const engagements = data.engagements as LiveEngagement[];
-      if (engagements) setLiveStates(engagements);
+      if (!engagements) return;
+      setLiveStates(engagements);
+
+      const visibleSnapshot = engagements.filter(
+        (eng) => !eng.person_id.startsWith("unknown_"),
+      );
+      const now = Date.now();
+      if (visibleSnapshot.length && now - lastSnapshotAt.current >= 1500) {
+        lastSnapshotAt.current = now;
+        setLiveHistory((prev) =>
+          [
+            ...prev,
+            {
+              timestamp: new Date(now).toISOString(),
+              engagements: visibleSnapshot,
+            },
+          ].slice(-24),
+        );
+      }
     });
     return unsub;
   }, [subscribe]);
@@ -102,6 +184,14 @@ export default function EngagementPage() {
   }, []);
 
   const visible = liveStates.filter((e) => !e.person_id.startsWith("unknown_"));
+  const liveScorePreview = useMemo(
+    () => buildLiveScores(liveHistory, visible),
+    [liveHistory, visible],
+  );
+  const scoreRows = sessionData?.scores.length
+    ? sessionData.scores
+    : liveScorePreview;
+  const usingLiveScores = !sessionData?.scores.length && liveScorePreview.length > 0;
 
   return (
     <div className="space-y-6">
@@ -174,15 +264,15 @@ export default function EngagementPage() {
           title="Aggregate scores"
           meta={
             <span>
-              {sessionData?.scores.length ?? 0} tracked
+              {scoreRows.length} tracked{usingLiveScores ? " · live preview" : ""}
             </span>
           }
         >
-          {!sessionData?.scores.length ? (
+          {!scoreRows.length ? (
             <EmptyState
               icon={<TableProperties className="w-5 h-5" />}
               title="NO SCORES YET"
-              description="Session engagement scores aggregate once enough samples are collected."
+              description="Live classifications will appear here as soon as identified subjects are visible."
             />
           ) : (
             <div className="overflow-x-auto -mx-4">
@@ -196,7 +286,7 @@ export default function EngagementPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sessionData.scores.map((s) => (
+                  {scoreRows.map((s) => (
                     <tr
                       key={s.person_id}
                       className="border-b border-[#141d35] hover:bg-[#0f1629]"
@@ -225,7 +315,7 @@ export default function EngagementPage() {
                                 />
                               }
                             >
-                              {state} {count as number}
+                              {STATE_LABEL[state] || state} {count as number}
                             </StatusPill>
                           ))}
                         </div>
@@ -240,7 +330,10 @@ export default function EngagementPage() {
       ) : (
         <div>
           <SectionHeader label="HEATMAP" title="Time-by-subject matrix" />
-          <EngagementHeatmap sessionId={sessionData?.session_id || null} />
+          <EngagementHeatmap
+            sessionId={sessionData?.session_id || null}
+            liveHistory={liveHistory}
+          />
         </div>
       )}
     </div>
@@ -257,7 +350,7 @@ function LegendRow() {
             className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#0a0f1c] border border-[#1c2540]"
           >
             <span className={["w-2 h-2 rounded-full", STATE_DOT[state]].join(" ")} />
-            <span className="text-gray-400">{state}</span>
+            <span className="text-gray-400">{STATE_LABEL[state] || state}</span>
           </span>
         )
       )}
@@ -285,7 +378,7 @@ function SubjectTile({ eng }: { eng: LiveEngagement }) {
           </div>
         </div>
         <StatusPill tone={tone} size="xs">
-          {eng.state}
+          {STATE_LABEL[eng.state] || eng.state}
         </StatusPill>
       </div>
       <div className="mt-3 flex items-center gap-2">

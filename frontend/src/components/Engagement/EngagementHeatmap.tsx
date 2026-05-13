@@ -14,6 +14,17 @@ interface HeatmapData {
   }[];
 }
 
+interface LiveEngagement {
+  person_id: string;
+  name: string | null;
+  state: string;
+}
+
+interface LiveSnapshot {
+  timestamp: string;
+  engagements: LiveEngagement[];
+}
+
 const STATE_CELL_COLORS: Record<string, string> = {
   working: "bg-emerald-500/90",
   collaborating: "bg-cyan-500/90",
@@ -23,12 +34,55 @@ const STATE_CELL_COLORS: Record<string, string> = {
   unknown: "bg-gray-700/50",
 };
 
+const STATE_LABEL: Record<string, string> = {
+  working: "working",
+  collaborating: "collab",
+  phone: "phone",
+  sleeping: "sleeping",
+  disengaged: "slacking",
+  unknown: "tracking",
+};
+
 interface Props {
   sessionId: string | null;
+  liveHistory?: LiveSnapshot[];
 }
 
-export default function EngagementHeatmap({ sessionId }: Props) {
-  const [data, setData] = useState<HeatmapData | null>(null);
+function buildLiveHeatmap(liveHistory: LiveSnapshot[]): HeatmapData | null {
+  if (liveHistory.length === 0) return null;
+
+  const students = new Map<
+    string,
+    { person_id: string; name: string; states: (string | null)[] }
+  >();
+  const time_buckets = liveHistory.map((snapshot) => snapshot.timestamp);
+
+  for (let snapshotIndex = 0; snapshotIndex < liveHistory.length; snapshotIndex += 1) {
+    const snapshot = liveHistory[snapshotIndex];
+    const byPerson = new Map(snapshot.engagements.map((eng) => [eng.person_id, eng]));
+    for (const eng of snapshot.engagements) {
+      if (!students.has(eng.person_id)) {
+        students.set(eng.person_id, {
+          person_id: eng.person_id,
+          name: eng.name || eng.person_id,
+          states: Array(snapshotIndex).fill(null),
+        });
+      }
+    }
+    for (const student of students.values()) {
+      student.states.push(byPerson.get(student.person_id)?.state ?? null);
+    }
+  }
+
+  return {
+    session_id: "live-preview",
+    time_buckets,
+    students: Array.from(students.values()),
+  };
+}
+
+export default function EngagementHeatmap({ sessionId, liveHistory = [] }: Props) {
+  const [savedData, setData] = useState<HeatmapData | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -41,13 +95,17 @@ export default function EngagementHeatmap({ sessionId }: Props) {
       .finally(() => setLoading(false));
   }, [sessionId]);
 
-  if (!sessionId) {
+  const liveData = buildLiveHeatmap(liveHistory);
+  const data = savedData?.students.length ? savedData : liveData;
+  const isLivePreview = !savedData?.students.length && Boolean(liveData?.students.length);
+
+  if (!sessionId && !data) {
     return (
       <Panel label="HEATMAP" title="Not available">
         <EmptyState
           icon={<Grid3x3 className="w-5 h-5" />}
-          title="NO ACTIVE SESSION"
-          description="Start a session to accumulate heatmap data."
+          title="AWAITING LIVE SIGNAL"
+          description="Identified live classifications will build a preview matrix here."
         />
       </Panel>
     );
@@ -67,13 +125,20 @@ export default function EngagementHeatmap({ sessionId }: Props) {
         <EmptyState
           icon={<Grid3x3 className="w-5 h-5" />}
           title="NO DATA"
-          description="No engagement observations have been recorded for this session."
+          description="Identified live classifications will build a preview matrix here."
         />
       </Panel>
     );
   }
 
   const timeLabels = data.time_buckets.map((t) => {
+    if (isLivePreview) {
+      return new Date(t).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+    }
     const parts = t.split(" ");
     return parts.length > 1 ? parts[1] : t;
   });
@@ -82,7 +147,7 @@ export default function EngagementHeatmap({ sessionId }: Props) {
   return (
     <Panel
       label="HEATMAP"
-      title="Behavioral matrix"
+      title={isLivePreview ? "Live preview matrix" : "Behavioral matrix"}
       meta={
         <span>
           {data.students.length} subjects × {data.time_buckets.length} intervals
@@ -97,7 +162,7 @@ export default function EngagementHeatmap({ sessionId }: Props) {
               className="inline-flex items-center gap-1.5 px-2 py-1 bg-[#05080f] border border-[#1c2540]"
             >
               <span className={["w-2 h-2", color].join(" ")} />
-              <span className="text-gray-400">{state}</span>
+              <span className="text-gray-400">{STATE_LABEL[state] || state}</span>
             </span>
           ))}
         </div>
@@ -133,7 +198,9 @@ export default function EngagementHeatmap({ sessionId }: Props) {
                           ? STATE_CELL_COLORS[state] || STATE_CELL_COLORS.unknown
                           : "bg-[#0a0f1c]",
                       ].join(" ")}
-                      title={`${student.name} @ ${data.time_buckets[i]}: ${state || "no data"}`}
+                      title={`${student.name} @ ${timeLabels[i]}: ${
+                        state ? STATE_LABEL[state] || state : "no data"
+                      }`}
                     />
                   ))}
                 </div>
@@ -143,7 +210,8 @@ export default function EngagementHeatmap({ sessionId }: Props) {
         </div>
 
         <p className="font-data text-[10px] text-gray-500 uppercase tracking-[0.14em]">
-          &gt; each cell = 1 minute; color = dominant state for interval
+          &gt; each cell = {isLivePreview ? "live snapshot" : "1 minute"};
+          color = dominant state for interval
         </p>
       </div>
     </Panel>

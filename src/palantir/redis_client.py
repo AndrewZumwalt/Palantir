@@ -65,6 +65,7 @@ class Keys:
     PRIVACY_MODE = "state:privacy_mode"
     OBJECT_CACHE = "state:object_cache"
     LATEST_FRAME = "state:latest_frame"
+    LATEST_FRAME_META = "state:latest_frame_meta"
     SERVICE_STATUS = "state:service_status"
 
 

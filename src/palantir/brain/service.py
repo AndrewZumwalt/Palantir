@@ -42,7 +42,7 @@ from .actuator import Actuator
 from .automation import AutomationEngine
 from .context_builder import ContextBuilder
 from .conversation import ConversationManager
-from .identity_linker import IdentityLinker
+from .identity_linker import IdentityLinker, LinkedIdentity
 from .llm_client import LLMClient
 from .offline_responder import generate_offline_response
 
@@ -155,12 +155,27 @@ class BrainService:
         speaker_id = None
         linked = None
 
-        # Check if audio service identified the speaker
-        last_speaker = await self._redis.get("state:last_speaker")
+        # Prefer the speaker identity attached to this utterance. The
+        # short-lived Redis key is only a compatibility fallback for older
+        # audio services and must be fresh enough to belong to this utterance.
         parsed_speaker: dict | None = None
+        if utterance.speaker_person_id:
+            parsed_speaker = {
+                "person_id": utterance.speaker_person_id,
+                "name": utterance.speaker_name,
+                "confidence": utterance.speaker_confidence,
+            }
+
+        last_speaker = (
+            await self._redis.get("state:last_speaker")
+            if parsed_speaker is None and utterance.source == "voice"
+            else None
+        )
         if last_speaker:
             try:
-                parsed_speaker = json.loads(last_speaker)
+                candidate = json.loads(last_speaker)
+                if self._last_speaker_is_fresh(candidate):
+                    parsed_speaker = candidate
             except (json.JSONDecodeError, TypeError):
                 logger.warning("last_speaker_parse_failed", raw=str(last_speaker)[:80])
 
@@ -184,10 +199,9 @@ class BrainService:
                 location_source=linked.location_source,
             )
         else:
-            # No voice match - try inference from visible faces
-            linked = await self._identity_linker.link(None, None, 0.0)
-            speaker_id = linked.person_id
-            speaker_name = linked.name
+            # No voice match. Do not infer the speaker from the camera; a
+            # person in frame is not necessarily the person talking.
+            linked = LinkedIdentity()
 
         # Check if this is a visual/object question that needs cloud vision
         visual_answer = await self._handle_visual_question(utterance.text, speaker_name)
@@ -270,6 +284,15 @@ class BrainService:
             )
             for trigger in voice_triggers:
                 await self._fire_trigger(trigger)
+
+    @staticmethod
+    def _last_speaker_is_fresh(parsed_speaker: dict) -> bool:
+        """Return True when a Redis speaker fallback is recent enough to use."""
+        try:
+            timestamp = float(parsed_speaker["timestamp"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return 0 <= time.time() - timestamp <= 5.0
 
     async def _on_event_for_automation(self, data: dict) -> None:
         """Evaluate person enter/exit events against automation rules."""
@@ -440,9 +463,41 @@ class BrainService:
             np_arr = np.frombuffer(frame_bytes, np.uint8)
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             if frame is not None:
+                await self._log_latest_frame_age()
                 return frame
 
         return np.zeros((480, 640, 3), dtype=np.uint8)
+
+    async def _log_latest_frame_age(self) -> None:
+        """Warn when a visual question is about to use a stale camera frame."""
+        if not self._redis:
+            return
+
+        try:
+            raw = await self._redis.get(Keys.LATEST_FRAME_META)
+        except Exception:
+            logger.debug("latest_frame_meta_read_failed", exc_info=True)
+            return
+
+        if not raw:
+            return
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="ignore")
+
+        try:
+            meta = json.loads(raw)
+            published_at = float(meta["published_at"])
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return
+
+        age_seconds = time.time() - published_at
+        if age_seconds > 2.0:
+            logger.warning(
+                "latest_frame_stale_for_visual_question",
+                age_ms=int(age_seconds * 1000),
+                frame_number=meta.get("frame_number"),
+                mode=meta.get("mode"),
+            )
 
     async def _on_privacy_toggle(self, data: dict) -> None:
         event = PrivacyModeEvent(**data)

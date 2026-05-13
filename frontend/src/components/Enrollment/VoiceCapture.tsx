@@ -1,5 +1,5 @@
 import { Mic, MicOff, SkipForward, Square } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { Button } from "../ui/Button";
 import { Panel } from "../ui/Panel";
@@ -10,6 +10,13 @@ interface VoiceEnrollmentStatus {
   voice_samples: number;
   required_samples: number;
   complete: boolean;
+}
+
+interface EnrollmentStatusResponse {
+  person_id: string;
+  voice_samples: number;
+  voice_required: number;
+  voice_complete: boolean;
 }
 
 interface VoiceCaptureProps {
@@ -30,6 +37,21 @@ export default function VoiceCapture({
   const [status, setStatus] = useState<VoiceEnrollmentStatus | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+
+  useEffect(() => {
+    setStatus(null);
+    api
+      .get<EnrollmentStatusResponse>(`/enrollment/persons/${personId}/status`)
+      .then((result) =>
+        setStatus({
+          person_id: result.person_id,
+          voice_samples: result.voice_samples,
+          required_samples: result.voice_required,
+          complete: result.voice_complete,
+        }),
+      )
+      .catch(() => {});
+  }, [personId]);
 
   const prompts = [
     `"Hello Palantir, my name is ${personName}."`,
@@ -121,6 +143,7 @@ export default function VoiceCapture({
   const samples = status?.voice_samples ?? 0;
   const required = status?.required_samples ?? 5;
   const pct = Math.min(100, (samples / required) * 100);
+  const hasCompleteVoice = Boolean(status?.complete);
 
   return (
     <Panel label="CAPTURE" title="Voice enrollment" tone="amber" brackets>
@@ -138,7 +161,7 @@ export default function VoiceCapture({
           </StatusPill>
         ) : (
           <StatusPill tone="gray" size="xs">
-            READY
+            {hasCompleteVoice ? "VOICE READY" : "READY"}
           </StatusPill>
         )}
       </div>
@@ -185,7 +208,7 @@ export default function VoiceCapture({
           onClick={onSkip}
           iconLeft={<SkipForward className="w-4 h-4" />}
         >
-          SKIP VOICE
+          {hasCompleteVoice ? "DONE" : "SKIP VOICE"}
         </Button>
         {recording ? (
           <Button
@@ -205,7 +228,11 @@ export default function VoiceCapture({
               processing ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />
             }
           >
-            {processing ? "PROCESSING" : "RECORD 5s"}
+            {processing
+              ? "PROCESSING"
+              : hasCompleteVoice
+                ? "RECORD MORE"
+                : "RECORD 5s"}
           </Button>
         )}
       </div>

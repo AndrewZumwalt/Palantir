@@ -3,6 +3,8 @@ import {
   Check,
   ChevronRight,
   Fingerprint,
+  Mic,
+  Pencil,
   RefreshCw,
   Shield,
   Trash2,
@@ -36,7 +38,7 @@ interface EnrollmentStatus {
   complete: boolean;
 }
 
-type Step = "list" | "create" | "consent" | "capture" | "voice" | "done";
+type Step = "list" | "create" | "consent" | "capture" | "voice" | "done" | "edit";
 
 const STEP_FLOW: { key: Step; label: string }[] = [
   { key: "create", label: "Identify" },
@@ -53,6 +55,7 @@ export default function EnrollmentWizard() {
     id: string;
     name: string;
   } | null>(null);
+  const [editingPerson, setEditingPerson] = useState<Person | null>(null);
   const [status, setStatus] = useState<EnrollmentStatus | null>(null);
   const [name, setName] = useState("");
   const [role, setRole] = useState("student");
@@ -163,6 +166,37 @@ export default function EnrollmentWizard() {
     setStep("consent");
   }, [name, role]);
 
+  const beginEdit = useCallback((person: Person) => {
+    stopCamera();
+    setEditingPerson(person);
+    setCurrentPerson({ id: person.id, name: person.name });
+    setName(person.name);
+    setRole(person.role);
+    setStatus(null);
+    setStep("edit");
+  }, [stopCamera]);
+
+  const beginVoiceCapture = useCallback((person: Person) => {
+    stopCamera();
+    setEditingPerson(person);
+    setCurrentPerson({ id: person.id, name: person.name });
+    setStatus(null);
+    setStep("voice");
+  }, [stopCamera]);
+
+  const handleUpdate = useCallback(async () => {
+    if (!editingPerson || !name.trim()) return;
+    const result = await api.put<{
+      person_id: string;
+      name: string;
+      role: string;
+    }>(`/enrollment/persons/${editingPerson.id}`, { name, role });
+    setEditingPerson({ ...editingPerson, name: result.name, role: result.role });
+    setCurrentPerson({ id: result.person_id, name: result.name });
+    await loadPersons();
+    setStep("list");
+  }, [editingPerson, loadPersons, name, role]);
+
   const handleConsent = useCallback(async () => {
     if (!currentPerson) return;
     await api.post(`/enrollment/persons/${currentPerson.id}/consent`, {
@@ -219,6 +253,7 @@ export default function EnrollmentWizard() {
     stopCamera();
     setStep("list");
     setCurrentPerson(null);
+    setEditingPerson(null);
     setStatus(null);
     setName("");
     setRole("student");
@@ -298,10 +333,30 @@ export default function EnrollmentWizard() {
                       {p.has_voice ? "VOICE ✓" : "NO VOICE"}
                     </StatusPill>
                   </div>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => beginEdit(p)}
+                      title="Edit subject"
+                      className="h-8 inline-flex items-center gap-1.5 px-2 border border-[#1c2540] text-gray-400 hover:text-amber-300 hover:border-amber-700 font-data text-[10px] uppercase tracking-[0.12em]"
+                      aria-label={`Edit ${p.name}`}
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => beginVoiceCapture(p)}
+                      title={p.has_voice ? "Record more voice samples" : "Add voice samples"}
+                      className="h-8 inline-flex items-center gap-1.5 px-2 border border-[#1c2540] text-gray-400 hover:text-cyan-300 hover:border-cyan-700 font-data text-[10px] uppercase tracking-[0.12em]"
+                      aria-label={`${p.has_voice ? "Update" : "Add"} voice for ${p.name}`}
+                    >
+                      <Mic className="w-3.5 h-3.5" />
+                      {p.has_voice ? "Voice" : "Add voice"}
+                    </button>
+                  </div>
                   <button
                     onClick={() => handleDelete(p.id)}
                     title="Purge subject"
-                    className="w-8 h-8 inline-flex items-center justify-center border border-[#1c2540] text-gray-500 hover:text-red-400 hover:border-red-700 opacity-0 group-hover:opacity-100"
+                    className="w-8 h-8 inline-flex items-center justify-center border border-[#1c2540] text-gray-500 hover:text-red-400 hover:border-red-700"
                     aria-label="Purge subject"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -326,6 +381,80 @@ export default function EnrollmentWizard() {
               }
             />
           )}
+        </Panel>
+      </div>
+    );
+  }
+
+  // ---------- EDIT ----------
+  if (step === "edit" && editingPerson) {
+    return (
+      <div className="max-w-2xl mx-auto space-y-5">
+        <div>
+          <div className="font-data text-[10px] uppercase tracking-[0.24em] text-amber-500">
+            // SUBJECT INTAKE · EDIT
+          </div>
+          <h1 className="text-2xl font-semibold text-gray-100 mt-1">
+            Edit subject
+          </h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Update roster details or reopen biometric capture for this record.
+          </p>
+        </div>
+
+        <Panel label="PROFILE" title={editingPerson.name}>
+          <div className="space-y-4">
+            <TextInput
+              label="FULL NAME"
+              required
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="First Last"
+            />
+            <Select
+              label="ROLE"
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+            >
+              <option value="student">Student</option>
+              <option value="teacher">Teacher</option>
+              <option value="admin">Admin</option>
+              <option value="guest">Guest</option>
+            </Select>
+          </div>
+
+          <div className="mt-5 flex flex-wrap gap-2">
+            <StatusPill tone={editingPerson.has_face ? "green" : "gray"} size="xs">
+              {editingPerson.has_face ? "FACE READY" : "NO FACE"}
+            </StatusPill>
+            <StatusPill tone={editingPerson.has_voice ? "cyan" : "gray"} size="xs">
+              {editingPerson.has_voice ? "VOICE READY" : "NO VOICE"}
+            </StatusPill>
+          </div>
+
+          <div className="flex gap-2 mt-6 justify-between flex-wrap">
+            <Button
+              variant="secondary"
+              onClick={() => beginVoiceCapture(editingPerson)}
+              iconLeft={<Mic className="w-4 h-4" />}
+            >
+              {editingPerson.has_voice ? "RECORD MORE VOICE" : "ADD VOICE"}
+            </Button>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={resetWizard}>
+                CANCEL
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleUpdate}
+                disabled={!name.trim()}
+                iconLeft={<Check className="w-4 h-4" />}
+              >
+                SAVE CHANGES
+              </Button>
+            </div>
+          </div>
         </Panel>
       </div>
     );
@@ -366,7 +495,7 @@ export default function EnrollmentWizard() {
             autoFocus
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Lastname, Firstname"
+            placeholder="First Last"
           />
           <Select
             label="ROLE"
@@ -608,14 +737,23 @@ export default function EnrollmentWizard() {
 
   // ---------- VOICE ----------
   if (step === "voice" && currentPerson) {
+    const updatingExisting = Boolean(editingPerson);
     return renderWizardFrame(
       `Biometric // voice · ${currentPerson.name}`,
-      "Five short samples. You may skip voice and finish with face only.",
+      updatingExisting
+        ? "Record additional samples to add or refresh this subject's voice profile."
+        : "Five short samples. You may skip voice and finish with face only.",
       <VoiceCapture
         personId={currentPerson.id}
         personName={currentPerson.name}
-        onComplete={() => setStep("done")}
-        onSkip={() => setStep("done")}
+        onComplete={() => {
+          if (updatingExisting) resetWizard();
+          else setStep("done");
+        }}
+        onSkip={() => {
+          if (updatingExisting) resetWizard();
+          else setStep("done");
+        }}
       />
     );
   }

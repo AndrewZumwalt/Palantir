@@ -97,8 +97,8 @@ class EngagementClassifier:
 
         Args:
             frame: BGR image from OpenCV.
-            known_persons: Dict mapping person_id to their face bounding box
-                          (from face recognition). Used to associate poses with
+            known_persons: Dict mapping person_id to their most recent face or
+                          body bounding box. Used to associate poses with
                           identified people.
 
         Returns:
@@ -107,10 +107,8 @@ class EngagementClassifier:
         if not self._model:
             return []
 
-        try:
-            results = self._model(frame, verbose=False)
-        except Exception:
-            logger.exception("pose_estimation_error")
+        results = self._run_pose_model(frame)
+        if not results:
             return []
 
         engagements = []
@@ -124,7 +122,10 @@ class EngagementClassifier:
                 # kpts shape: (17, 3) — x, y, confidence per keypoint
                 kpts_np = kpts.cpu().numpy()
 
-                # Match this pose to a known person by bbox overlap
+                pose_bbox = self._pose_bbox(result, i)
+                track_id = self._pose_track_id(result, i)
+
+                # Match this pose to a known person by bbox containment/proximity.
                 person_id = self._match_to_person(result, i, person_bboxes)
                 if not person_id:
                     person_id = f"unknown_{i}"
@@ -146,9 +147,25 @@ class EngagementClassifier:
                     person_id=person_id,
                     state=smoothed,
                     confidence=self._state_confidence(pstate, smoothed),
+                    bbox=pose_bbox,
+                    track_id=track_id,
                 ))
 
         return engagements
+
+    def _run_pose_model(self, frame: np.ndarray):
+        """Run pose inference, preferring persistent YOLO body tracking."""
+        if not self._model:
+            return []
+        try:
+            return self._model.track(frame, persist=True, verbose=False)
+        except Exception:
+            logger.debug("pose_tracking_unavailable_falling_back", exc_info=True)
+        try:
+            return self._model(frame, verbose=False)
+        except Exception:
+            logger.exception("pose_estimation_error")
+            return []
 
     def _classify_pose(self, keypoints: np.ndarray, person_id: str) -> EngagementState:
         """Classify a single person's engagement from their pose keypoints."""
@@ -219,7 +236,7 @@ class EngagementClassifier:
     def _match_to_person(
         self, result, pose_idx: int, person_bboxes: dict[str, BoundingBox]
     ) -> str | None:
-        """Match a detected pose to a known person by bounding box overlap."""
+        """Match a detected pose to a known person by containment/proximity."""
         if not person_bboxes or result.boxes is None:
             return None
 
@@ -228,21 +245,68 @@ class EngagementClassifier:
 
         box = result.boxes[pose_idx]
         xyxy = box.xyxy[0].cpu().numpy().astype(int)
+        pose_x1, pose_y1, pose_x2, pose_y2 = xyxy
         pose_cx = (xyxy[0] + xyxy[2]) / 2
         pose_cy = (xyxy[1] + xyxy[3]) / 2
+        pose_w = max(1, pose_x2 - pose_x1)
+        pose_h = max(1, pose_y2 - pose_y1)
 
         best_id = None
-        best_dist = float("inf")
+        best_score = float("inf")
+        max_dist = max(150.0, min(pose_w, pose_h) * 0.75)
 
         for person_id, bbox in person_bboxes.items():
-            face_cx = bbox.x + bbox.width / 2
-            face_cy = bbox.y + bbox.height / 2
-            dist = np.sqrt((pose_cx - face_cx) ** 2 + (pose_cy - face_cy) ** 2)
-            if dist < best_dist and dist < 150:
-                best_dist = dist
+            known_cx = bbox.x + bbox.width / 2
+            known_cy = bbox.y + bbox.height / 2
+
+            # When known_persons comes from face recognition, the face center
+            # should sit inside the pose/body box even though the box centers
+            # are far apart. This is the key to keeping identity after a turn.
+            inside_pose = pose_x1 <= known_cx <= pose_x2 and pose_y1 <= known_cy <= pose_y2
+            if inside_pose:
+                score = 0.0
+            else:
+                score = float(np.sqrt((pose_cx - known_cx) ** 2 + (pose_cy - known_cy) ** 2))
+                if score > max_dist:
+                    continue
+
+            if score < best_score:
+                best_score = score
                 best_id = person_id
 
         return best_id
+
+    def _pose_bbox(self, result, pose_idx: int) -> BoundingBox | None:
+        """Extract the YOLO pose/body bounding box for downstream tracking."""
+        if result.boxes is None or pose_idx >= len(result.boxes):
+            return None
+        xyxy = result.boxes[pose_idx].xyxy[0].cpu().numpy().astype(int)
+        x1, y1, x2, y2 = xyxy
+        return BoundingBox(
+            x=max(0, int(x1)),
+            y=max(0, int(y1)),
+            width=max(1, int(x2 - x1)),
+            height=max(1, int(y2 - y1)),
+        )
+
+    def _pose_track_id(self, result, pose_idx: int) -> int | None:
+        """Extract the persistent YOLO track ID when tracking is available."""
+        if result.boxes is None:
+            return None
+        ids = getattr(result.boxes, "id", None)
+        if ids is None or pose_idx >= len(ids):
+            return None
+        raw = ids[pose_idx]
+        if hasattr(raw, "cpu"):
+            raw = raw.cpu().numpy()
+        if isinstance(raw, np.ndarray):
+            if raw.size == 0:
+                return None
+            raw = raw.reshape(-1)[0]
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
     def _smooth_state(self, pstate: PersonState) -> EngagementState:
         """Return the majority engagement state over the smoothing window."""

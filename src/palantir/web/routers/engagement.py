@@ -7,6 +7,7 @@ import sqlite3
 from fastapi import APIRouter, Depends
 
 from palantir.eventlog.aggregator import EngagementAggregator
+from palantir.names import display_person_name
 from palantir.web.dependencies import get_db, verify_auth
 from palantir.web.rate_limit import rate_limit_read
 
@@ -116,7 +117,7 @@ async def get_engagement_heatmap(
                 states_by_minute.append(None)
         students.append({
             "person_id": pid,
-            "name": name,
+            "name": display_person_name(name),
             "states": states_by_minute,
         })
 

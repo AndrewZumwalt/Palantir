@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 import structlog
 
+from palantir.names import display_person_name
+
 logger = structlog.get_logger()
 
 EMBEDDING_DIM = 512  # ArcFace embedding dimension
@@ -64,7 +66,7 @@ class FaceRecognizer:
             embedding = blob_to_embedding(row["face_embedding"])
             self._profiles.append({
                 "person_id": row["id"],
-                "name": row["name"],
+                "name": display_person_name(row["name"]),
                 "role": row["role"],
             })
             embeddings.append(embedding)

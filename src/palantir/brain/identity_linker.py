@@ -14,6 +14,7 @@ import redis.asyncio as aioredis
 import structlog
 
 from palantir.models import BoundingBox, VisiblePerson
+from palantir.names import display_person_name
 from palantir.redis_client import Keys
 
 logger = structlog.get_logger()
@@ -76,6 +77,8 @@ class IdentityLinker:
         speaker_person_id: str | None,
         speaker_name: str | None,
         speaker_confidence: float = 0.0,
+        *,
+        allow_visible_fallback: bool = False,
     ) -> LinkedIdentity:
         """Resolve a speaker's full identity including visual location.
 
@@ -83,20 +86,26 @@ class IdentityLinker:
             speaker_person_id: Person ID from voice recognition (or None).
             speaker_name: Name from voice recognition (or None).
             speaker_confidence: Voice match confidence score.
+            allow_visible_fallback: When True, infer from a single visible
+                face if the voice is unknown. Speaker attribution should keep
+                this False so an off-camera speaker is not mislabeled as the
+                only person in frame.
 
         Returns:
             LinkedIdentity with both voice and visual information.
         """
         identity = LinkedIdentity(
             person_id=speaker_person_id,
-            name=speaker_name,
+            name=display_person_name(speaker_name),
             voice_confidence=speaker_confidence,
             voice_matched=speaker_person_id is not None,
         )
 
         if not speaker_person_id:
-            # Voice didn't match anyone - try to infer from visible faces
-            identity = await self._infer_from_visible(identity)
+            # Voice did not match anyone. Keep speaker attribution unknown
+            # unless a caller explicitly asks for visible-person inference.
+            if allow_visible_fallback:
+                identity = await self._infer_from_visible(identity)
             return identity
 
         # We know who's speaking. Find them in the camera.
@@ -170,7 +179,7 @@ class IdentityLinker:
             try:
                 visible = VisiblePerson.model_validate_json(data_str)
                 identity.person_id = visible.person_id
-                identity.name = visible.name
+                identity.name = display_person_name(visible.name)
                 identity.role = visible.role
                 identity.bbox = visible.bbox
                 identity.visually_located = True

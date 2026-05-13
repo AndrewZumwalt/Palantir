@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import platform
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -59,7 +61,15 @@ class LocalCameraCapture(CameraCapture):
         self._fps_actual = 0.0
 
     def start(self) -> None:
-        self._cap = cv2.VideoCapture(self._config.device)
+        backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+        if backend == cv2.CAP_ANY:
+            self._cap = cv2.VideoCapture(self._config.device)
+        else:
+            self._cap = cv2.VideoCapture(self._config.device, backend)
+
+        # Ask the driver for a single-frame buffer so Redis/cloud-vision reads
+        # the newest camera frame instead of one queued by the OS.
+        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._config.width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._config.height)
         self._cap.set(cv2.CAP_PROP_FPS, self._config.fps)
@@ -201,6 +211,17 @@ class RelayCameraCapture(CameraCapture):
                 # Keep LATEST_FRAME refreshed for the brain's cloud-vision path.
                 try:
                     await self._redis.set(Keys.LATEST_FRAME, bytes(data), ex=30)
+                    await self._redis.set(
+                        Keys.LATEST_FRAME_META,
+                        json.dumps(
+                            {
+                                "frame_number": self._frame_count,
+                                "published_at": time.time(),
+                                "mode": "relay",
+                            }
+                        ),
+                        ex=30,
+                    )
                 except Exception:
                     logger.debug("latest_frame_redis_set_failed", exc_info=True)
         except asyncio.CancelledError:

@@ -7,6 +7,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, Query
 
+from palantir.names import display_person_name
 from palantir.web.dependencies import get_db, verify_auth
 from palantir.web.rate_limit import rate_limit_read, rate_limit_write
 
@@ -66,6 +67,7 @@ async def list_events(
     events = []
     for row in rows:
         item = dict(row)
+        item["person_name"] = display_person_name(item.get("person_name"))
         if item.get("data"):
             try:
                 item["data"] = json.loads(item["data"])

@@ -18,6 +18,7 @@ interface DetectedFace {
   name?: string | null;
   confidence?: number;
   bbox: BBox;
+  source?: "face" | "body" | "track" | string;
 }
 
 interface DetectedObject {
@@ -38,6 +39,7 @@ interface PersonEngagement {
     | "disengaged"
     | "unknown";
   confidence: number;
+  bbox?: BBox | null;
 }
 
 // Colour-per-engagement so the overlay reads at a glance.
@@ -48,6 +50,15 @@ const ENGAGEMENT_TONE: Record<PersonEngagement["state"], string> = {
   sleeping: "#9ca3af", // gray-400
   disengaged: "#fbbf24", // amber-400
   unknown: "#475569", // slate-600
+};
+
+const BEHAVIOR_LABEL: Record<PersonEngagement["state"], string> = {
+  working: "WORKING",
+  collaborating: "COLLAB",
+  phone: "PHONE",
+  sleeping: "SLEEPING",
+  disengaged: "SLACKING",
+  unknown: "TRACKING",
 };
 
 interface ConfigCamera {
@@ -298,6 +309,43 @@ export default function CameraPage() {
                   </g>
                 ))}
 
+                {/* Body / engagement boxes keep moving when a face is covered */}
+                {engagement.map((e, i) => {
+                  if (!e.bbox) return null;
+                  const colour = ENGAGEMENT_TONE[e.state] ?? ENGAGEMENT_TONE.unknown;
+                  const isUnknown = e.person_id.startsWith("unknown_");
+                  const label = [
+                    e.name ?? (isUnknown ? "Unidentified" : `id:${e.person_id.slice(0, 6)}`),
+                    BEHAVIOR_LABEL[e.state] ?? e.state,
+                  ]
+                    .filter(Boolean)
+                    .join(" - ");
+                  return (
+                    <g key={`eng-${e.person_id}-${i}`}>
+                      <rect
+                        x={e.bbox.x}
+                        y={e.bbox.y}
+                        width={e.bbox.width}
+                        height={e.bbox.height}
+                        fill="none"
+                        stroke={colour}
+                        strokeWidth={Math.max(2, size.width / 520)}
+                        strokeDasharray={isUnknown ? "10 6" : undefined}
+                        opacity={0.88}
+                      />
+                      <text
+                        x={e.bbox.x + 4}
+                        y={Math.max(e.bbox.y - 24, 12)}
+                        fontSize={Math.max(11, size.width / 115)}
+                        fontFamily="ui-monospace, monospace"
+                        fill={colour}
+                      >
+                        {label}
+                      </text>
+                    </g>
+                  );
+                })}
+
                 {/* Face boxes coloured by current engagement state */}
                 {faces.map((f, i) => {
                   const eng = f.person_id
@@ -306,13 +354,20 @@ export default function CameraPage() {
                   const colour = eng
                     ? ENGAGEMENT_TONE[eng.state]
                     : "#fbbf24"; // default amber
+                  const unidentified = !f.person_id && !f.name;
                   const label = [
-                    f.name ?? (f.person_id ? "id:" + f.person_id.slice(0, 6) : "?"),
-                    eng?.state ? `· ${eng.state}` : null,
+                    f.name ?? (f.person_id ? "id:" + f.person_id.slice(0, 6) : "Unidentified"),
+                    eng?.state ? `- ${eng.state}` : null,
+                    unidentified ? "- face" : null,
+                    f.source && f.source !== "face" ? `- ${f.source}` : null,
                     f.confidence ? `(${(f.confidence * 100).toFixed(0)}%)` : null,
                   ]
                     .filter(Boolean)
-                    .join(" ");
+                    .join(" ")
+                    .replace(
+                      eng?.state ?? "",
+                      eng?.state ? BEHAVIOR_LABEL[eng.state] : "",
+                    );
                   return (
                     <g key={`face-${i}`}>
                       <rect
@@ -363,10 +418,10 @@ export default function CameraPage() {
                     style={{ background: ENGAGEMENT_TONE[e.state] }}
                   />
                   <span className="text-sm text-gray-100">
-                    {e.name ?? `id:${e.person_id.slice(0, 8)}`}
+                    {e.name ?? (e.person_id.startsWith("unknown_") ? "Unidentified" : `id:${e.person_id.slice(0, 8)}`)}
                   </span>
                   <span className="font-data text-[10px] uppercase tracking-[0.18em] text-gray-500">
-                    {e.state}
+                    {BEHAVIOR_LABEL[e.state]}
                   </span>
                 </div>
                 <span className="font-data text-[11px] text-gray-400 tabular-nums">
